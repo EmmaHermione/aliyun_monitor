@@ -104,10 +104,12 @@ def tg_request(config, method, payload=None, timeout=20):
         return {"ok": False}
 
 
-def send_message(config, chat_id, text, reply_markup=None):
+def send_message(config, chat_id, text, reply_markup=None, parse_mode=None):
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     tg_request(config, "sendMessage", payload)
 
 
@@ -218,6 +220,7 @@ def is_hhmm(value):
 
 def main_keyboard(config):
     rows = [[{"text": user_label(user, idx), "callback_data": f"select:{idx}"}] for idx, user in enumerate(users(config))]
+    rows.append([{"text": "📊 获取报告", "callback_data": "report"}])
     rows.append([{"text": "🔄 刷新列表", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
 
@@ -234,7 +237,7 @@ def instance_keyboard(index):
                 {"text": "📊 状态", "callback_data": f"act:status:{index}"},
             ],
             [
-                {"text": "⏰ 定时说明", "callback_data": f"sched_help:{index}"},
+                {"text": "✏️ 修改定时", "callback_data": f"sched_edit:{index}"},
                 {"text": "🗑 删除定时", "callback_data": f"unschedule:{index}"},
             ],
             [{"text": "⬅️ 返回", "callback_data": "menu"}],
@@ -245,6 +248,7 @@ def instance_keyboard(index):
 HELP_TEXT = """可用命令:
 /menu - 打开实例管理菜单
 /list - 查看实例列表
+/report - 获取当前日报内容
 /status 机器名或序号 - 查询状态
 /start 机器名或序号 - 开机
 /stop 机器名或序号 - 关机
@@ -327,7 +331,46 @@ def clear_schedule(config, chat_id, key):
     send_message(config, chat_id, f"🗑 已删除 {user_label(user)} 的定时任务，恢复全天运行")
 
 
-def handle_command(config, chat_id, text):
+def pending_key(chat_id):
+    return str(chat_id)
+
+
+def pending_schedules(state):
+    return state.setdefault("pending_schedules", {})
+
+
+def set_pending_schedule(state, chat_id, index):
+    pending_schedules(state)[pending_key(chat_id)] = index
+
+
+def pop_pending_schedule(state, chat_id):
+    return pending_schedules(state).pop(pending_key(chat_id), None)
+
+
+def handle_pending_schedule(config, state, chat_id, text):
+    key = pending_key(chat_id)
+    idx = pending_schedules(state).get(key)
+    if idx is None:
+        return False
+    parts = text.strip().split()
+    if len(parts) < 2 or not is_hhmm(parts[0]) or not is_hhmm(parts[1]):
+        send_message(config, chat_id, "时间格式错误，请直接重新输入开始和结束时间，格式：HH:MM HH:MM")
+        return True
+    pop_pending_schedule(state, chat_id)
+    set_schedule(config, chat_id, str(idx + 1), parts[0], parts[1])
+    return True
+
+
+def send_report(config, chat_id):
+    try:
+        from report import build_report
+        send_message(config, chat_id, build_report(config), parse_mode="Markdown")
+    except Exception as e:
+        logging.exception("生成报告失败")
+        send_message(config, chat_id, f"❌ 生成报告失败: {e}")
+
+
+def handle_command(config, chat_id, text, state=None):
     parts = text.strip().split()
     command = parts[0].split("@", 1)[0].lower()
     if command == "/start" and len(parts) >= 2:
@@ -345,6 +388,8 @@ def handle_command(config, chat_id, text):
         for idx, user in enumerate(users(config)):
             lines.append(f"{idx + 1}. {user_label(user)} | {user.get('instance_id')} | {schedule_text(user)}")
         send_message(config, chat_id, "\n".join(lines))
+    elif command == "/report":
+        send_report(config, chat_id)
     elif command in ("/status", "/stop", "/reboot") and len(parts) >= 2:
         idx, user = find_user(config, parts[1])
         if user is None:
@@ -363,7 +408,7 @@ def handle_command(config, chat_id, text):
         send_message(config, chat_id, HELP_TEXT)
 
 
-def handle_callback(config, callback):
+def handle_callback(config, callback, state):
     callback_id = callback.get("id")
     message = callback.get("message", {})
     chat_id = message.get("chat", {}).get("id")
@@ -377,17 +422,20 @@ def handle_callback(config, callback):
     answer_callback(config, callback_id)
     if data == "menu":
         show_menu(config, chat_id, message_id)
+    elif data == "report":
+        send_report(config, chat_id)
     elif data.startswith("select:"):
         show_instance(config, chat_id, int(data.split(":", 1)[1]), message_id)
     elif data.startswith("act:"):
         _, action, idx = data.split(":", 2)
         run_action(config, chat_id, action, int(idx))
-    elif data.startswith("sched_help:"):
+    elif data.startswith("sched_edit:"):
         idx = int(data.split(":", 1)[1])
         all_users = users(config)
         if 0 <= idx < len(all_users):
             name = user_label(all_users[idx])
-            send_message(config, chat_id, f"设置定时请发送:\n/schedule {name} 01:00 13:00\n\n删除定时可点按钮或发送:\n/unschedule {name}")
+            set_pending_schedule(state, chat_id, idx)
+            send_message(config, chat_id, f"正在修改 {name} 的定时。\n请发送开始时间和结束时间，格式：HH:MM HH:MM")
     elif data.startswith("unschedule:"):
         idx = int(data.split(":", 1)[1])
         all_users = users(config)
@@ -395,9 +443,9 @@ def handle_callback(config, callback):
             clear_schedule(config, chat_id, str(idx + 1))
 
 
-def handle_update(config, update):
+def handle_update(config, update, state):
     if "callback_query" in update:
-        handle_callback(config, update["callback_query"])
+        handle_callback(config, update["callback_query"], state)
         return
 
     message = update.get("message") or update.get("edited_message") or {}
@@ -408,7 +456,9 @@ def handle_update(config, update):
     if not is_allowed(config, chat_id):
         send_message(config, chat_id, "无权限。")
         return
-    handle_command(config, chat_id, text)
+    if not text.strip().startswith("/") and handle_pending_schedule(config, state, chat_id, text):
+        return
+    handle_command(config, chat_id, text, state)
 
 
 def poll_once(config, state):
@@ -419,7 +469,7 @@ def poll_once(config, state):
         return
     for update in data.get("result", []):
         state["offset"] = update["update_id"] + 1
-        handle_update(load_config(), update)
+        handle_update(load_config(), update, state)
     save_state(state)
 
 

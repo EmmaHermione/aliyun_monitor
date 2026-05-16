@@ -71,10 +71,8 @@ def do_common_request(client, domain, version, action, params=None, method='POST
                 continue
             return None
 
-def main():
-    config = load_config()
+def build_report(config):
     users = config.get('users', [])
-    tg_conf = config.get('telegram', {})
     
     report_lines = []
     now = datetime.datetime.now()
@@ -211,8 +209,12 @@ def main():
             report_lines.append(f"❌ *{user.get('name', 'Unknown')}* Error: {str(e)}\n")
 
     report_lines.append(f"\n⏰ 更新时间：{update_time}")
-    final_msg = "\n".join(report_lines)
-    send_tg_report(tg_conf, final_msg)
+    return "\n".join(report_lines)
+
+def main():
+    config = load_config()
+    tg_conf = config.get('telegram', {})
+    send_tg_report(tg_conf, build_report(config))
 
 if __name__ == "__main__":
     main()

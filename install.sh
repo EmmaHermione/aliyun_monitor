@@ -39,6 +39,27 @@ function prompt_hhmm() {
     done
 }
 
+function install_script_file() {
+    local FILE_NAME="$1"
+    local TARGET_PATH="${TARGET_DIR}/${FILE_NAME}"
+
+    if [ -s "$TARGET_PATH" ]; then
+        echo -e "${GREEN}✓ 使用服务器本地文件: ${TARGET_PATH}${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}${TARGET_PATH} 不存在，从 GitHub 下载 ${FILE_NAME}...${NC}"
+    if wget -q -O "${TARGET_PATH}.tmp" "${REPO_URL}/${FILE_NAME}" && [ -s "${TARGET_PATH}.tmp" ]; then
+        mv "${TARGET_PATH}.tmp" "$TARGET_PATH"
+        echo -e "${GREEN}✓ 已下载: ${FILE_NAME}${NC}"
+        return 0
+    fi
+
+    rm -f "${TARGET_PATH}.tmp"
+    echo -e "${RED}${FILE_NAME} 获取失败，请检查 /opt/scripts 文件或 GitHub 网络。${NC}"
+    return 1
+}
+
 echo -e "${BLUE}=============================================================${NC}"
 echo -e "${BLUE}    阿里云 CDT 流量监控 & 日报 一键部署/管理脚本 (修复增强版)  ${NC}"
 echo -e "${BLUE}=============================================================${NC}"
@@ -80,19 +101,25 @@ EOF
         echo "@reboot nohup ${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py >> ${TARGET_DIR}/bot.log 2>&1 #aliyun_monitor_bot" >> /tmp/cron_clean
         crontab /tmp/cron_clean
         rm -f /tmp/cron_bk /tmp/cron_clean
+        pkill -f "${TARGET_DIR}/bot.py" 2>/dev/null || true
         nohup "${VENV_DIR}/bin/python" "${TARGET_DIR}/bot.py" >> "${TARGET_DIR}/bot.log" 2>&1 &
         echo -e "${GREEN}✓ Telegram 机器人已启动，并写入 @reboot 自启任务${NC}"
     fi
 }
 
 function install_or_restart_bot() {
-    echo -e "${YELLOW}>> 更新 Telegram 机器人脚本...${NC}"
-    wget -q -O "${TARGET_DIR}/bot.py" "${REPO_URL}/bot.py"
-    if [ ! -s "${TARGET_DIR}/bot.py" ]; then
-        echo -e "${RED}bot.py 下载失败，请检查网络或 GitHub 地址是否正确。${NC}"
-        return 1
-    fi
+    echo -e "${YELLOW}>> 更新并重启 Telegram 机器人...${NC}"
+    install_script_file "bot.py" || return 1
+    install_script_file "report.py" || return 1
     setup_bot_service
+}
+
+function update_scripts_keep_config() {
+    echo -e "${YELLOW}>> 更新脚本文件，保留现有配置...${NC}"
+    install_script_file "monitor.py" || return 1
+    install_script_file "report.py" || return 1
+    install_script_file "bot.py" || return 1
+    echo -e "${GREEN}✓ 脚本文件检查完成，未修改 ${CONFIG_FILE}${NC}"
 }
 
 # 收集单个用户信息的函数
@@ -189,14 +216,14 @@ function run_full_install() {
     echo -e "${YELLOW}>> 安装 Python 依赖库...${NC}"
     "$VENV_DIR/bin/pip" install requests aliyun-python-sdk-core aliyun-python-sdk-ecs aliyun-python-sdk-bssopenapi --upgrade >/dev/null 2>&1
 
-    # 4. 从 GitHub 下载源码
-    echo -e "${YELLOW}>> 从 GitHub 下载最新脚本...${NC}"
-    wget -q -O "${TARGET_DIR}/monitor.py" "${REPO_URL}/monitor.py"
-    wget -q -O "${TARGET_DIR}/report.py" "${REPO_URL}/report.py"
-    wget -q -O "${TARGET_DIR}/bot.py" "${REPO_URL}/bot.py"
+    # 4. 获取源码：优先使用 /opt/scripts 现有文件，不存在再从 GitHub 下载
+    echo -e "${YELLOW}>> 获取监控脚本...${NC}"
+    install_script_file "monitor.py" || exit 1
+    install_script_file "report.py" || exit 1
+    install_script_file "bot.py" || exit 1
 
     if [ ! -s "${TARGET_DIR}/monitor.py" ] || [ ! -s "${TARGET_DIR}/report.py" ] || [ ! -s "${TARGET_DIR}/bot.py" ]; then
-        echo -e "${RED}下载失败！请检查网络或 GitHub 地址是否正确。${NC}"
+        echo -e "${RED}脚本获取失败！请检查 /opt/scripts 文件或 GitHub 网络。${NC}"
         exit 1
     fi
 
@@ -269,12 +296,13 @@ function run_manage_menu() {
         echo "2) 删除已有监控实例 (Delete)"
         echo "3) 暂停/恢复监控实例 (Pause/Resume)"
         echo "4) 修改实例定时运行窗口 (Schedule)"
-        echo "5) 更新脚本并重置所有配置 (Update & Reset)"
+        echo "5) 更新脚本文件，保留配置 (Update)"
         echo "6) 启动/重启 Telegram 机器人 (Bot)"
-        echo "7) 卸载并清理监控脚本 (Uninstall)"
-        echo "8) 退出脚本 (Exit)"
+        echo "7) 重新初始化配置 (Reset Config)"
+        echo "8) 卸载并清理监控脚本 (Uninstall)"
+        echo "9) 退出脚本 (Exit)"
         echo -e "${GREEN}=====================================${NC}"
-        read -p "请输入序号 (1-8): " MENU_OPT
+        read -p "请输入序号 (1-9): " MENU_OPT
 
         case $MENU_OPT in
             1)
@@ -424,17 +452,20 @@ except Exception:
                 fi
                 ;;
             5)
-                echo -e "${RED}⚠️ 此操作将更新代码并覆盖现有的 config.json！${NC}"
-                read -p "确认要更新并重置配置吗？(y/n): " CONFIRM_REINSTALL
-                if [[ "$CONFIRM_REINSTALL" =~ ^[Yy]$ ]]; then
-                    run_full_install
-                    exit 0
-                fi
+                update_scripts_keep_config
                 ;;
             6)
                 install_or_restart_bot
                 ;;
             7)
+                echo -e "${RED}⚠️ 此操作将重新初始化并覆盖现有的 config.json！${NC}"
+                read -p "确认要重新初始化配置吗？(y/n): " CONFIRM_REINSTALL
+                if [[ "$CONFIRM_REINSTALL" =~ ^[Yy]$ ]]; then
+                    run_full_install
+                    exit 0
+                fi
+                ;;
+            8)
                 echo -e "${YELLOW}即将调用卸载脚本清理 aliyun_monitor。${NC}"
                 TMP_UNINSTALL="/tmp/aliyun_monitor_uninstall.sh"
                 if wget -q -O "$TMP_UNINSTALL" "$UNINSTALL_URL" && [ -s "$TMP_UNINSTALL" ]; then
@@ -447,7 +478,7 @@ except Exception:
                     rm -f "$TMP_UNINSTALL"
                 fi
                 ;;
-            8)
+            9)
                 echo -e "${GREEN}退出脚本。${NC}"
                 exit 0
                 ;;
