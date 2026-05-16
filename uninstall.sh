@@ -8,6 +8,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 TARGET_DIR="/opt/scripts"
+BOT_SERVICE="aliyun-monitor-bot.service"
 
 clear
 echo -e "${BLUE}=============================================================${NC}"
@@ -33,6 +34,15 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
+
+# 1.5 停止 Telegram Bot 服务
+echo -e "${YELLOW}>> 正在停止 Telegram 机器人服务...${NC}"
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop "$BOT_SERVICE" >/dev/null 2>&1 || true
+    systemctl disable "$BOT_SERVICE" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/${BOT_SERVICE}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 
 # 2. 清理 Crontab (安全模式)
 echo -e "${YELLOW}>> [1/3] 正在清理定时任务...${NC}"

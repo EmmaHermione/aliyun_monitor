@@ -8,10 +8,12 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-REPO_URL="https://github.com/EmmaHermione/aliyun_monitor/tree/master/src"
+REPO_URL="https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/master/src"
+UNINSTALL_URL="https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/master/uninstall.sh"
 TARGET_DIR="/opt/scripts"
 VENV_DIR="${TARGET_DIR}/venv"
 CONFIG_FILE="${TARGET_DIR}/config.json"
+BOT_SERVICE="aliyun-monitor-bot.service"
 
 # 全局变量，用于在函数间传递生成的 JSON 数据
 CURRENT_USER_JSON=""
@@ -47,6 +49,51 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ================= 核心功能函数 =================
+
+function setup_bot_service() {
+    echo -e "${YELLOW}>> 配置 Telegram 机器人远程管理服务...${NC}"
+
+    if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
+        cat > "/etc/systemd/system/${BOT_SERVICE}" <<EOF
+[Unit]
+Description=Aliyun Monitor Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${TARGET_DIR}
+ExecStart=${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable "${BOT_SERVICE}" >/dev/null 2>&1
+        systemctl restart "${BOT_SERVICE}"
+        echo -e "${GREEN}✓ Telegram 机器人服务已启动: ${BOT_SERVICE}${NC}"
+    else
+        crontab -l > /tmp/cron_bk 2>/dev/null
+        grep -v "aliyun_monitor_bot" /tmp/cron_bk > /tmp/cron_clean
+        echo "@reboot nohup ${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py >> ${TARGET_DIR}/bot.log 2>&1 #aliyun_monitor_bot" >> /tmp/cron_clean
+        crontab /tmp/cron_clean
+        rm -f /tmp/cron_bk /tmp/cron_clean
+        nohup "${VENV_DIR}/bin/python" "${TARGET_DIR}/bot.py" >> "${TARGET_DIR}/bot.log" 2>&1 &
+        echo -e "${GREEN}✓ Telegram 机器人已启动，并写入 @reboot 自启任务${NC}"
+    fi
+}
+
+function install_or_restart_bot() {
+    echo -e "${YELLOW}>> 更新 Telegram 机器人脚本...${NC}"
+    wget -q -O "${TARGET_DIR}/bot.py" "${REPO_URL}/bot.py"
+    if [ ! -s "${TARGET_DIR}/bot.py" ]; then
+        echo -e "${RED}bot.py 下载失败，请检查网络或 GitHub 地址是否正确。${NC}"
+        return 1
+    fi
+    setup_bot_service
+}
 
 # 收集单个用户信息的函数
 function get_single_user_json() {
@@ -146,8 +193,9 @@ function run_full_install() {
     echo -e "${YELLOW}>> 从 GitHub 下载最新脚本...${NC}"
     wget -q -O "${TARGET_DIR}/monitor.py" "${REPO_URL}/monitor.py"
     wget -q -O "${TARGET_DIR}/report.py" "${REPO_URL}/report.py"
+    wget -q -O "${TARGET_DIR}/bot.py" "${REPO_URL}/bot.py"
 
-    if [ ! -s "${TARGET_DIR}/monitor.py" ]; then
+    if [ ! -s "${TARGET_DIR}/monitor.py" ] || [ ! -s "${TARGET_DIR}/report.py" ] || [ ! -s "${TARGET_DIR}/bot.py" ]; then
         echo -e "${RED}下载失败！请检查网络或 GitHub 地址是否正确。${NC}"
         exit 1
     fi
@@ -193,6 +241,7 @@ function run_full_install() {
 }
 EOF
     echo -e "${GREEN}配置文件已生成: ${CONFIG_FILE}${NC}"
+    chmod 600 "$CONFIG_FILE"
 
     # 9. 设置 Crontab
     echo -e "${YELLOW}>> 配置定时任务...${NC}"
@@ -203,9 +252,12 @@ EOF
     crontab /tmp/cron_clean
     rm /tmp/cron_bk /tmp/cron_clean
 
+    setup_bot_service
+
     echo -e "\n${GREEN}🎉 安装与配置完成！${NC}"
     echo -e "您可以使用以下命令手动测试日报发送："
     echo -e "${YELLOW}${VENV_DIR}/bin/python ${TARGET_DIR}/report.py${NC}"
+    echo -e "Telegram 机器人管理入口：发送 ${YELLOW}/menu${NC}"
 }
 
 # 管理菜单 (二次运行)
@@ -218,9 +270,11 @@ function run_manage_menu() {
         echo "3) 暂停/恢复监控实例 (Pause/Resume)"
         echo "4) 修改实例定时运行窗口 (Schedule)"
         echo "5) 更新脚本并重置所有配置 (Update & Reset)"
-        echo "6) 退出脚本 (Exit)"
+        echo "6) 启动/重启 Telegram 机器人 (Bot)"
+        echo "7) 卸载并清理监控脚本 (Uninstall)"
+        echo "8) 退出脚本 (Exit)"
         echo -e "${GREEN}=====================================${NC}"
-        read -p "请输入序号 (1-6): " MENU_OPT
+        read -p "请输入序号 (1-8): " MENU_OPT
 
         case $MENU_OPT in
             1)
@@ -378,6 +432,22 @@ except Exception:
                 fi
                 ;;
             6)
+                install_or_restart_bot
+                ;;
+            7)
+                echo -e "${YELLOW}即将调用卸载脚本清理 aliyun_monitor。${NC}"
+                TMP_UNINSTALL="/tmp/aliyun_monitor_uninstall.sh"
+                if wget -q -O "$TMP_UNINSTALL" "$UNINSTALL_URL" && [ -s "$TMP_UNINSTALL" ]; then
+                    sed -i 's/\r$//' "$TMP_UNINSTALL"
+                    sh "$TMP_UNINSTALL"
+                    rm -f "$TMP_UNINSTALL"
+                    exit 0
+                else
+                    echo -e "${RED}卸载脚本下载失败，请检查网络后重试。${NC}"
+                    rm -f "$TMP_UNINSTALL"
+                fi
+                ;;
+            8)
                 echo -e "${GREEN}退出脚本。${NC}"
                 exit 0
                 ;;
