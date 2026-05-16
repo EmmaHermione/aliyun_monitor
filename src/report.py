@@ -80,7 +80,7 @@ def main():
     now = datetime.datetime.now()
     today = now.strftime("%Y-%m-%d")
     update_time = now.strftime("%Y-%m-%d %H:%M")
-    report_lines.append("📊 *阿里云每日报告*")
+    report_lines.append("📊 *阿里云 - 使用报告*\n")
 
     for user in users:
         try:
@@ -197,7 +197,6 @@ def main():
             if status == "NotFound": run_icon = "❓"
 
             user_report = (
-                f"\n"
                 f"👤 *{user_name}* ({spec})\n"
                 f"   ├ 🖥️ 状态: {run_icon} {status}\n"
                 f"   ├ 🌐 IP: `{ip}`\n"
