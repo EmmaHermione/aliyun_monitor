@@ -80,7 +80,7 @@ def main():
     now = datetime.datetime.now()
     today = now.strftime("%Y-%m-%d")
     update_time = now.strftime("%Y-%m-%d %H:%M")
-    report_lines.append("📊 *阿里云 - 使用报告*\n")
+    report_lines.append("📊 *阿里云 - 每日报告*\n")
 
     for user in users:
         try:
@@ -90,7 +90,7 @@ def main():
             if user.get('paused') or user.get('disabled'):
                 user_name = user.get('name', '').strip() or target_id or "Unknown_Device"
                 report_lines.append(
-                    f"👤 *{user_name}* (暂停)\n"
+                    f"☁️ *{user_name}* (暂停)\n"
                     f"   ⏸️ 监控: 已暂停\n"
                 )
                 continue
@@ -197,13 +197,13 @@ def main():
             if status == "NotFound": run_icon = "❓"
 
             user_report = (
-                f"👤 *{user_name}* ({spec})\n"
-                f"   ├ 🖥️ 状态: {run_icon} {status}\n"
-                f"   ├ 🌐 IP: `{ip}`\n"
-                f"   ├ ⏱️ 计划: {schedule_str}\n"
-                f"   ├ 📈 流量: {traffic_str}\n"
-                f"   ├ 💰 账单: *{bill_str}*\n"
-                f"   ├ 📝 评价: {status_icon}\n"
+                f"☁️ *{user_name}* ({spec})\n"
+                f"├🖥️ 状态: {run_icon} {status}\n"
+                f"├🌐 IP: `{ip}`\n"
+                f"├⏱️ 计划: {schedule_str}\n"
+                f"├📈 流量: {traffic_str}\n"
+                f"├💰 账单: *{bill_str}*\n"
+                f"├🔥 预警: {status_icon}\n"
             )
             report_lines.append(user_report)
 
