@@ -60,6 +60,22 @@ function install_script_file() {
     return 1
 }
 
+function download_script_file() {
+    local FILE_NAME="$1"
+    local TARGET_PATH="${TARGET_DIR}/${FILE_NAME}"
+
+    echo -e "${YELLOW}从 GitHub 更新 ${FILE_NAME}...${NC}"
+    if wget -q -O "${TARGET_PATH}.tmp" "${REPO_URL}/${FILE_NAME}" && [ -s "${TARGET_PATH}.tmp" ]; then
+        mv "${TARGET_PATH}.tmp" "$TARGET_PATH"
+        echo -e "${GREEN}✓ 已更新: ${FILE_NAME}${NC}"
+        return 0
+    fi
+
+    rm -f "${TARGET_PATH}.tmp"
+    echo -e "${RED}${FILE_NAME} 更新失败，请检查 GitHub 网络。${NC}"
+    return 1
+}
+
 echo -e "${BLUE}=============================================================${NC}"
 echo -e "${BLUE}    阿里云 CDT 流量监控 & 日报 一键部署/管理脚本 (修复增强版)  ${NC}"
 echo -e "${BLUE}=============================================================${NC}"
@@ -116,9 +132,9 @@ function install_or_restart_bot() {
 
 function update_scripts_keep_config() {
     echo -e "${YELLOW}>> 更新脚本文件，保留现有配置...${NC}"
-    install_script_file "monitor.py" || return 1
-    install_script_file "report.py" || return 1
-    install_script_file "bot.py" || return 1
+    download_script_file "monitor.py" || return 1
+    download_script_file "report.py" || return 1
+    download_script_file "bot.py" || return 1
     echo -e "${GREEN}✓ 脚本文件检查完成，未修改 ${CONFIG_FILE}${NC}"
 }
 
@@ -216,14 +232,14 @@ function run_full_install() {
     echo -e "${YELLOW}>> 安装 Python 依赖库...${NC}"
     "$VENV_DIR/bin/pip" install requests aliyun-python-sdk-core aliyun-python-sdk-ecs aliyun-python-sdk-bssopenapi --upgrade >/dev/null 2>&1
 
-    # 4. 获取源码：优先使用 /opt/scripts 现有文件，不存在再从 GitHub 下载
+    # 4. 获取源码：首次安装/重新初始化时从 GitHub 拉取最新脚本
     echo -e "${YELLOW}>> 获取监控脚本...${NC}"
-    install_script_file "monitor.py" || exit 1
-    install_script_file "report.py" || exit 1
-    install_script_file "bot.py" || exit 1
+    download_script_file "monitor.py" || exit 1
+    download_script_file "report.py" || exit 1
+    download_script_file "bot.py" || exit 1
 
     if [ ! -s "${TARGET_DIR}/monitor.py" ] || [ ! -s "${TARGET_DIR}/report.py" ] || [ ! -s "${TARGET_DIR}/bot.py" ]; then
-        echo -e "${RED}脚本获取失败！请检查 /opt/scripts 文件或 GitHub 网络。${NC}"
+        echo -e "${RED}脚本获取失败！请检查 GitHub 网络。${NC}"
         exit 1
     fi
 
