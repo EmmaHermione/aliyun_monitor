@@ -80,7 +80,7 @@ def main():
     now = datetime.datetime.now()
     today = now.strftime("%Y-%m-%d")
     update_time = now.strftime("%Y-%m-%d %H:%M")
-    report_lines.append("📊 *[阿里云 - 使用报告]*\n")
+    report_lines.append("📊 *阿里云每日报告*")
 
     for user in users:
         try:
@@ -187,7 +187,7 @@ def main():
                 currency_symbol = user.get('currency', '$')
                 bill_str = f"{currency_symbol}{bill_amount:.2f}"
 
-            status_icon = "✅"
+            status_icon = "✅ 无风险"
             if traffic_gb >= 0 and traffic_gb > quota: status_icon = "⚠️ 流量超标"
             if bill_amount > bill_limit: status_icon = "💸 扣费预警"
             if traffic_gb < 0: status_icon = "⚠️ 流量查询异常"
@@ -197,13 +197,14 @@ def main():
             if status == "NotFound": run_icon = "❓"
 
             user_report = (
+                f"\n"
                 f"👤 *{user_name}* ({spec})\n"
-                f"   🖥️ 状态: {run_icon} {status}\n"
-                f"   🌐 IP: `{ip}`\n"
-                f"   ⏱️ 计划: {schedule_str}\n"
-                f"   📈 流量: {traffic_str}\n"
-                f"   💰 账单: *{bill_str}*\n"
-                f"   📝 评价: {status_icon}\n"
+                f"   ├ 🖥️ 状态: {run_icon} {status}\n"
+                f"   ├ 🌐 IP: `{ip}`\n"
+                f"   ├ ⏱️ 计划: {schedule_str}\n"
+                f"   ├ 📈 流量: {traffic_str}\n"
+                f"   ├ 💰 账单: *{bill_str}*\n"
+                f"   ├ 📝 评价: {status_icon}\n"
             )
             report_lines.append(user_report)
 
