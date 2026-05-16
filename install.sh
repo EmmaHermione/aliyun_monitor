@@ -8,8 +8,8 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-REPO_URL="https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/master/src"
-UNINSTALL_URL="https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/master/uninstall.sh"
+REPO_URL="https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/master/src"
+UNINSTALL_URL="https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/master/uninstall.sh"
 TARGET_DIR="/opt/scripts"
 VENV_DIR="${TARGET_DIR}/venv"
 CONFIG_FILE="${TARGET_DIR}/config.json"
