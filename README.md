@@ -35,6 +35,7 @@
 - 🔄 **自动恢复**：次月流量重置后自动开机恢复业务。
 - 📊 **多账号多地域**：同时监控任意组合（不同账号、不同区域、不同内外版实例）。
 - 📩 **Telegram 通知**：异常监控告警 + 每日图文并茂的汇总日报。
+- 🤖 **Telegram 机器人管理**：支持菜单化查看实例、开机、关机、重启、查询状态、修改定时窗口，并可随时获取当前日报内容。
 
 ---
 
@@ -96,7 +97,7 @@ wget -qO- https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/main/ins
 使用 **root 用户** 在任意连通互联网的 Linux 服务器或所监控的 ECS 本机上执行：
 
 ```bash
-wget -O install.sh https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/main/install.sh
+wget -O install.sh https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/master/install.sh
 sed -i 's/\r$//' install.sh
 bash install.sh
 ```
@@ -107,8 +108,9 @@ bash install.sh
 * 引导您录入 Telegram 配置、选择站别类型（人民币或美元账单）、输入并配置多个待监控账号。
 * 为每个实例单独设置可选的每日运行时段，用于多账号、多服务器轮询使用 CDT。
 * 设置系统计划任务（Cron），按 **5 分钟/次** 及每天早 9 点执行巡检与汇报。
+* 配置 Telegram Bot 远程管理入口，发送 `/menu` 即可打开管理菜单。
 
-> 提示：如果日后需要增加、删除机器或刷新底层组件配置，只需再次运行该脚本命令即可进入智能管理面板。
+> 提示：如果日后需要增加、删除机器、更新脚本、重启 Bot 或调整定时窗口，只需再次运行该脚本命令即可进入管理面板。
 
 ---
 
@@ -197,11 +199,20 @@ timedatectl set-timezone Asia/Shanghai
 2) 删除已有监控实例 (Delete)
 3) 暂停/恢复监控实例 (Pause/Resume)
 4) 修改实例定时运行窗口 (Schedule)
-5) 更新脚本并重置所有配置 (Update & Reset)
-6) 退出脚本 (Exit)
+5) 更新脚本文件，保留配置 (Update)
+6) 启动/重启 Telegram 机器人 (Bot)
+7) 重新初始化配置 (Reset Config)
+8) 卸载并清理监控脚本 (Uninstall)
+9) 退出脚本 (Exit)
 ```
 
 选择 `4) 修改实例定时运行窗口 (Schedule)`，即可为已有实例开启、关闭或修改运行窗口。
+
+选择 `5) 更新脚本文件，保留配置 (Update)` 会从远程仓库拉取最新的 `monitor.py`、`report.py`、`bot.py`，但不会修改 `/opt/scripts/config.json`。
+
+选择 `6) 启动/重启 Telegram 机器人 (Bot)` 会使用 `/opt/scripts` 下已有的 `bot.py` 和 `report.py` 启动或重启 Bot；如果文件缺失，脚本会尝试从远程仓库下载。
+
+选择 `7) 重新初始化配置 (Reset Config)` 才会重新进入完整配置流程，并覆盖现有 `/opt/scripts/config.json`。这是危险操作，请确认已备份配置后再执行。
 
 也可以直接编辑 `/opt/scripts/config.json`：
 
@@ -212,6 +223,51 @@ timedatectl set-timezone Asia/Shanghai
 ```
 
 注意：如果多个实例时间段重叠，它们会同时运行；如果时间段之间有空档，空档期间没有实例运行。
+
+---
+
+## 🤖 Telegram Bot 远程管理
+
+安装完成后，在 Telegram 中向您的机器人发送：
+
+```text
+/menu
+```
+
+即可打开实例管理菜单。主菜单会列出所有 ECS 实例，并提供 `📊 获取报告` 按钮。
+
+选中某台实例后，可以执行：
+
+- `🟢 开机`
+- `🔴 关机`
+- `🔁 重启`
+- `📊 状态`
+- `✏️ 修改定时`
+- `🗑 删除定时`
+
+点击 `✏️ 修改定时` 后，Bot 会等待您输入新的开始时间和结束时间。直接发送：
+
+```text
+08:00 20:00
+```
+
+即可把所选实例的运行窗口修改为 `08:00-20:00`。如果时间格式输错，可以直接重新输入，格式必须为 `HH:MM HH:MM`。
+
+也可以直接使用命令：
+
+```text
+/menu
+/list
+/report
+/status 机器名或序号
+/start 机器名或序号
+/stop 机器名或序号
+/reboot 机器名或序号
+/schedule 机器名或序号 HH:MM HH:MM
+/unschedule 机器名或序号
+```
+
+其中 `/report` 会立即生成并发送当前日报内容，与每天定时发送的日报使用同一套统计逻辑。
 
 ---
 
