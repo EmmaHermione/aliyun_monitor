@@ -175,7 +175,7 @@ def check_and_act(user, tg_conf, state):
     try:
         client = AcsClient(user['ak'], user['sk'], user['region'])
 
-        # 1. 获取实例当前状态，先执行计划窗口判断，避免流量查询失败影响轮询关机
+        # 1. 获取实例当前状态，先执行计划窗口判断，避免流量查询失败影响定时计划关机
         status = get_instance_status(client, instance_id)
         if status is None:
             logger.error(f"[{name}] 未找到实例: {instance_id}")
@@ -188,8 +188,8 @@ def check_and_act(user, tg_conf, state):
                 stop_req.set_InstanceId(instance_id)
                 client.do_action_with_exception(stop_req)
                 if can_notify(state, instance_id, 'schedule_stopped'):
-                    msg = f"机器: {name}\n计划时段: {schedule_desc(user)}\n动作: 已按轮询计划关机"
-                    send_tg_alert(tg_conf, "计划轮询", msg, "green")
+                    msg = f"机器: {name}\n计划时段: {schedule_desc(user)}\n动作: 已按定时计划关机"
+                    send_tg_alert(tg_conf, "定时计划", msg, "green")
                     mark_notified(state, instance_id, 'schedule_stopped')
             else:
                 logger.info(f"[{name}] 当前不在计划运行时段({schedule_desc(user)})，实例状态: {status}，保持不运行")

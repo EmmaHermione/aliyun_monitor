@@ -193,7 +193,7 @@ function get_single_user_json() {
     read -p "关机阈值 (GB, 默认180): " LIMIT
     LIMIT=${LIMIT:-180}
 
-    echo -e "\n${CYAN}💡 可选: 为该实例设置每日运行时段，用于多台服务器轮询使用 CDT${NC}"
+    echo -e "\n${CYAN}💡 可选: 为该实例设置每日运行时段，用于多台服务器按定时计划使用 CDT${NC}"
     echo -e "${CYAN}   示例: A 机器 00:00-12:00，B 机器 12:00-00:00${NC}"
     read -p "是否启用该实例的定时运行窗口? (y/n, 默认 n): " SCHEDULE_OPT
     if [[ "$SCHEDULE_OPT" =~ ^[Yy]$ ]]; then

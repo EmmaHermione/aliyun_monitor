@@ -71,140 +71,128 @@ def do_common_request(client, domain, version, action, params=None, method='POST
                 continue
             return None
 
+def build_user_report(user):
+    target_id = user.get('instance_id', '').strip()
+    target_region = user.get('region', '').strip()
+    resgroup = user.get('resgroup', '').strip()
+    user_name = user.get('name', '').strip() or target_id or "Unknown_Device"
+
+    if user.get('paused') or user.get('disabled'):
+        return (
+            f"☁️ *{user_name}* (暂停)\n"
+            f"   ⏸️ 监控: 已暂停\n"
+        )
+
+    client = AcsClient(user['ak'].strip(), user['sk'].strip(), target_region)
+
+    traffic_data = do_common_request(AcsClient(user['ak'].strip(), user['sk'].strip(), 'cn-hangzhou'), 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
+    traffic_gb = -1
+    if traffic_data:
+        traffic_gb = sum(d.get('Traffic', 0) for d in traffic_data.get('TrafficDetails', [])) / (1024**3)
+
+    bill_amount = -1
+    bill_currency = 'USD'
+
+    bill_params = {
+        'BillingCycle': datetime.datetime.now().strftime("%Y-%m"),
+        'InstanceID': target_id
+    }
+    bill_data = do_common_request(client, 'business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', bill_params, retries=1)
+    if bill_data and bill_data.get('Success'):
+        items = bill_data.get('Data', {}).get('Items', [])
+        if items:
+            bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
+            bill_currency = items[0].get('Currency', 'USD')
+
+    if bill_amount == -1:
+        bill_params2 = {'BillingCycle': datetime.datetime.now().strftime("%Y-%m")}
+        bill_endpoint = user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')
+        bill_data2 = do_common_request(client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
+        if bill_data2:
+            items2 = bill_data2.get('Data', {}).get('Items', {}).get('Item', [])
+            bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items2)
+            if items2:
+                bill_currency = items2[0].get('Currency', 'USD')
+
+    ecs_params = {'PageSize': 50, 'RegionId': target_region}
+    if resgroup:
+        ecs_params['ResourceGroupId'] = resgroup
+    ecs_data = do_common_request(client, 'ecs.aliyuncs.com', '2014-05-26', 'DescribeInstances', ecs_params)
+
+    status, ip, spec = "NotFound", "N/A", "N/A"
+    if ecs_data and 'Instances' in ecs_data:
+        for inst in ecs_data['Instances'].get('Instance', []):
+            if inst['InstanceId'] == target_id:
+                status = inst.get('Status', 'Unknown')
+                pub = inst.get('PublicIpAddress', {}).get('IpAddress', [])
+                eip = inst.get('EipAddress', {}).get('IpAddress', "")
+                ip = eip if eip else (pub[0] if pub else "无公网IP")
+                cpu = inst.get('Cpu', 0)
+                mem_mb = inst.get('Memory', 0)
+                if mem_mb > 0 and mem_mb % 1024 == 0:
+                    mem_str = f"{int(mem_mb/1024)}"
+                else:
+                    mem_str = f"{mem_mb/1024:.1f}"
+                spec = f"{cpu}C{mem_str}G"
+                break
+
+    quota = user.get('traffic_limit', 180)
+    bill_limit = user.get('bill_threshold', 1.0)
+    if user.get('schedule_enabled'):
+        schedule_str = f"{user.get('schedule_start', '00:00')}-{user.get('schedule_end', '23:59')}"
+    else:
+        schedule_str = "全天运行"
+
+    if traffic_gb >= 0:
+        percent = (traffic_gb / quota) * 100
+        traffic_str = f"{traffic_gb:.2f} GB ({percent:.1f}%)"
+    else:
+        traffic_str = "⚠️ 查询失败"
+
+    bill_str = f"${bill_amount:.2f}" if bill_amount != -1 else "Fail"
+    if bill_amount != -1 and bill_currency == 'CNY':
+        bill_str = f"¥{bill_amount:.2f}"
+        bill_limit = bill_limit * 7.0
+    elif bill_amount != -1:
+        currency_symbol = user.get('currency', '$')
+        bill_str = f"{currency_symbol}{bill_amount:.2f}"
+
+    risk_str = "✅ 无风险"
+    if traffic_gb >= 0 and traffic_gb > quota:
+        risk_str = "⚠️ 流量超标"
+    if bill_amount > bill_limit:
+        risk_str = "💸 扣费预警"
+    if traffic_gb < 0:
+        risk_str = "⚠️ 流量查询异常"
+
+    run_icon = "🟢" if status == "Running" else "🔴"
+    if status == "Stopped":
+        run_icon = "⚫"
+    if status == "NotFound":
+        run_icon = "❓"
+
+    return (
+        f"☁️ *{user_name}* ({spec})\n"
+        f"├🖥️ 状态: {run_icon} {status}\n"
+        f"├🌐 IP: `{ip}`\n"
+        f"├⏱️ 计划: {schedule_str}\n"
+        f"├📈 流量: {traffic_str}\n"
+        f"├💰 账单: *{bill_str}*\n"
+        f"├🔥 预警: {risk_str}\n"
+    )
+
+
 def build_report(config):
     users = config.get('users', [])
     
     report_lines = []
     now = datetime.datetime.now()
-    today = now.strftime("%Y-%m-%d")
     update_time = now.strftime("%Y-%m-%d %H:%M")
     report_lines.append("📊 *阿里云 - 每日报告*\n")
 
     for user in users:
         try:
-            target_id = user.get('instance_id', '').strip()
-            target_region = user.get('region', '').strip()
-            resgroup = user.get('resgroup', '').strip()
-            if user.get('paused') or user.get('disabled'):
-                user_name = user.get('name', '').strip() or target_id or "Unknown_Device"
-                report_lines.append(
-                    f"☁️ *{user_name}* (暂停)\n"
-                    f"   ⏸️ 监控: 已暂停\n"
-                )
-                continue
-
-            # [名字显示修复] 优先使用备注，没有则用ID，再没有则用Unknown
-            user_name = user.get('name', '').strip()
-            if not user_name:
-                user_name = target_id if target_id else "Unknown_Device"
-            
-            client = AcsClient(user['ak'].strip(), user['sk'].strip(), target_region)
-            
-            # 1. CDT 流量
-            traffic_data = do_common_request(AcsClient(user['ak'].strip(), user['sk'].strip(), 'cn-hangzhou'), 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
-            traffic_gb = -1  # -1 表示查询失败
-            if traffic_data:
-                traffic_gb = sum(d.get('Traffic', 0) for d in traffic_data.get('TrafficDetails', [])) / (1024**3)
-
-            # 2. BSS 账单 (兼容国际站/国内站: 优先 DescribeInstanceBill，失败回退 QueryBillOverview)
-            bill_amount = -1
-            bill_currency = 'USD'
-
-            # 尝试1: DescribeInstanceBill (精确到实例)
-            bill_params = {
-                'BillingCycle': datetime.datetime.now().strftime("%Y-%m"),
-                'InstanceID': target_id
-            }
-            bill_data = do_common_request(client, 'business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', bill_params, retries=1)
-            if bill_data and bill_data.get('Success'):
-                items = bill_data.get('Data', {}).get('Items', [])
-                if items:
-                    bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
-                    bill_currency = items[0].get('Currency', 'USD')
-
-            # 尝试2: 回退到 QueryBillOverview (国际站兼容)
-            if bill_amount == -1:
-                bill_params2 = {'BillingCycle': datetime.datetime.now().strftime("%Y-%m")}
-                bill_endpoint = user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')
-                bill_data2 = do_common_request(client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
-                if bill_data2:
-                    items2 = bill_data2.get('Data', {}).get('Items', {}).get('Item', [])
-                    bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items2)
-                    if items2:
-                        bill_currency = items2[0].get('Currency', 'USD')
-
-            # 3. ECS 状态
-            ecs_params = {'PageSize': 50, 'RegionId': target_region}
-            if resgroup:
-                ecs_params['ResourceGroupId'] = resgroup
-            ecs_data = do_common_request(client, 'ecs.aliyuncs.com', '2014-05-26', 'DescribeInstances', ecs_params)
-            
-            status, ip, spec = "NotFound", "N/A", "N/A"
-            
-            if ecs_data and 'Instances' in ecs_data:
-                for inst in ecs_data['Instances'].get('Instance', []):
-                    if inst['InstanceId'] == target_id:
-                        status = inst.get('Status', 'Unknown')
-                        # IP
-                        pub = inst.get('PublicIpAddress', {}).get('IpAddress', [])
-                        eip = inst.get('EipAddress', {}).get('IpAddress', "")
-                        ip = eip if eip else (pub[0] if pub else "无公网IP")
-                        
-                        # Spec (0.5G 内存修复)
-                        cpu = inst.get('Cpu', 0)
-                        mem_mb = inst.get('Memory', 0)
-                        if mem_mb > 0 and mem_mb % 1024 == 0:
-                            mem_str = f"{int(mem_mb/1024)}"
-                        else:
-                            mem_str = f"{mem_mb/1024:.1f}"
-                        
-                        spec = f"{cpu}C{mem_str}G"
-                        break 
-
-            # 4. 判定
-            quota = user.get('traffic_limit', 180)
-            bill_limit = user.get('bill_threshold', 1.0)
-            if user.get('schedule_enabled'):
-                schedule_str = f"{user.get('schedule_start', '00:00')}-{user.get('schedule_end', '23:59')}"
-            else:
-                schedule_str = "全天运行"
-            
-            if traffic_gb >= 0:
-                percent = (traffic_gb / quota) * 100
-                traffic_str = f"{traffic_gb:.2f} GB ({percent:.1f}%)"
-            else:
-                percent = 0
-                traffic_str = "⚠️ 查询失败"
-            
-            bill_str = f"${bill_amount:.2f}" if bill_amount != -1 else "Fail"
-            if bill_amount != -1 and bill_currency == 'CNY':
-                bill_str = f"¥{bill_amount:.2f}"
-                bill_limit = bill_limit * 7.0  # USD 阈值换算为 CNY
-            elif bill_amount != -1:
-                # 覆盖货币符号（支持根据配置动态显示）
-                currency_symbol = user.get('currency', '$')
-                bill_str = f"{currency_symbol}{bill_amount:.2f}"
-
-            status_icon = "✅ 无风险"
-            if traffic_gb >= 0 and traffic_gb > quota: status_icon = "⚠️ 流量超标"
-            if bill_amount > bill_limit: status_icon = "💸 扣费预警"
-            if traffic_gb < 0: status_icon = "⚠️ 流量查询异常"
-            
-            run_icon = "🟢" if status == "Running" else "🔴"
-            if status == "Stopped": run_icon = "⚫"
-            if status == "NotFound": run_icon = "❓"
-
-            user_report = (
-                f"☁️ *{user_name}* ({spec})\n"
-                f"├🖥️ 状态: {run_icon} {status}\n"
-                f"├🌐 IP: `{ip}`\n"
-                f"├⏱️ 计划: {schedule_str}\n"
-                f"├📈 流量: {traffic_str}\n"
-                f"├💰 账单: *{bill_str}*\n"
-                f"├🔥 预警: {status_icon}\n"
-            )
-            report_lines.append(user_report)
-
+            report_lines.append(build_user_report(user))
         except Exception as e:
             report_lines.append(f"❌ *{user.get('name', 'Unknown')}* Error: {str(e)}\n")
 

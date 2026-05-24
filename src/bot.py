@@ -113,10 +113,12 @@ def send_message(config, chat_id, text, reply_markup=None, parse_mode=None):
     tg_request(config, "sendMessage", payload)
 
 
-def edit_message(config, chat_id, message_id, text, reply_markup=None):
+def edit_message(config, chat_id, message_id, text, reply_markup=None, parse_mode=None):
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     tg_request(config, "editMessageText", payload)
 
 
@@ -234,11 +236,11 @@ def instance_keyboard(index):
             ],
             [
                 {"text": "🔁 重启", "callback_data": f"act:reboot:{index}"},
-                {"text": "📊 状态", "callback_data": f"act:status:{index}"},
+                {"text": "✏️ 修改定时", "callback_data": f"sched_edit:{index}"},
             ],
             [
-                {"text": "✏️ 修改定时", "callback_data": f"sched_edit:{index}"},
                 {"text": "🗑 删除定时", "callback_data": f"unschedule:{index}"},
+                {"text": "⏸️ 暂停/恢复监控", "callback_data": f"toggle_pause:{index}"},
             ],
             [{"text": "⬅️ 返回", "callback_data": "menu"}],
         ]
@@ -275,11 +277,17 @@ def show_instance(config, chat_id, index, message_id=None):
         send_message(config, chat_id, "实例不存在，请重新打开 /menu。")
         return
     user = all_users[index]
-    text = f"✅ 已选: {user_label(user)}\n\n请选择操作："
+    try:
+        from report import build_user_report
+        detail = build_user_report(user)
+    except Exception as e:
+        logging.exception("查询实例状态失败")
+        detail = f"📊 {user_label(user)}\n状态查询失败: {e}"
+    text = f"✅ 已选: {user_label(user)}\n\n{detail}\n\n请选择操作："
     if message_id:
-        edit_message(config, chat_id, message_id, text, instance_keyboard(index))
+        edit_message(config, chat_id, message_id, text, instance_keyboard(index), parse_mode="Markdown")
     else:
-        send_message(config, chat_id, text, instance_keyboard(index))
+        send_message(config, chat_id, text, instance_keyboard(index), parse_mode="Markdown")
 
 
 def run_action(config, chat_id, action, index):
@@ -300,7 +308,8 @@ def run_action(config, chat_id, action, index):
             reboot_instance(user)
             send_message(config, chat_id, f"🔁 已发送重启指令: {name}")
         elif action == "status":
-            send_message(config, chat_id, instance_status_text(user))
+            from report import build_user_report
+            send_message(config, chat_id, build_user_report(user), parse_mode="Markdown")
     except Exception as e:
         logging.exception("执行 %s 失败", action)
         send_message(config, chat_id, f"❌ {name} 操作失败: {e}")
@@ -329,6 +338,19 @@ def clear_schedule(config, chat_id, key):
     user["schedule_enabled"] = False
     save_config(config)
     send_message(config, chat_id, f"🗑 已删除 {user_label(user)} 的定时任务，恢复全天运行")
+
+
+def toggle_pause(config, chat_id, key):
+    idx, user = find_user(config, key)
+    if user is None:
+        send_message(config, chat_id, f"未找到实例: {key}")
+        return
+    paused = bool(user.get("paused") or user.get("disabled"))
+    user["paused"] = not paused
+    user.pop("disabled", None)
+    save_config(config)
+    state = "已暂停" if user["paused"] else "已恢复"
+    send_message(config, chat_id, f"⏸️ {user_label(user)} 监控{state}")
 
 
 def pending_key(chat_id):
@@ -441,6 +463,12 @@ def handle_callback(config, callback, state):
         all_users = users(config)
         if 0 <= idx < len(all_users):
             clear_schedule(config, chat_id, str(idx + 1))
+    elif data.startswith("toggle_pause:"):
+        idx = int(data.split(":", 1)[1])
+        all_users = users(config)
+        if 0 <= idx < len(all_users):
+            toggle_pause(config, chat_id, str(idx + 1))
+            show_instance(load_config(), chat_id, idx, message_id)
 
 
 def handle_update(config, update, state):
