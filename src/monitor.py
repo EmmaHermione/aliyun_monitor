@@ -118,6 +118,24 @@ def send_tg_alert(tg_conf, title, message, color_status):
     except Exception as e:
         logger.error(f"TG发送失败: {e}")
 
+def get_current_traffic_text(user):
+    try:
+        req_traffic = CommonRequest()
+        req_traffic.set_domain('cdt.aliyuncs.com')
+        req_traffic.set_version('2021-08-13')
+        req_traffic.set_action_name('ListCdtInternetTraffic')
+        req_traffic.set_method('POST')
+        req_traffic.set_connect_timeout(5000)
+        req_traffic.set_read_timeout(15000)
+        cdt_client = AcsClient(user['ak'], user['sk'], 'cn-hangzhou')
+        resp_traffic = cdt_client.do_action_with_exception(req_traffic)
+        data_traffic = json.loads(resp_traffic.decode('utf-8'))
+        total_bytes = sum(d.get('Traffic', 0) for d in data_traffic.get('TrafficDetails', []))
+        return f"{total_bytes / (1024 ** 3):.2f}GB"
+    except Exception as e:
+        logger.warning(f"[{user.get('name', user.get('instance_id'))}] 查询当前流量失败: {e}")
+        return "查询失败"
+
 # ---------- 查询实例状态 ----------
 
 def get_instance_status(client, instance_id):
@@ -188,7 +206,12 @@ def check_and_act(user, tg_conf, state):
                 stop_req.set_InstanceId(instance_id)
                 client.do_action_with_exception(stop_req)
                 if can_notify(state, instance_id, 'schedule_stopped'):
-                    msg = f"机器: {name}\n计划时段: {schedule_desc(user)}\n动作: 已按定时计划关机"
+                    msg = (
+                        f"机器: {name}\n"
+                        f"计划时段: {schedule_desc(user)}\n"
+                        f"当前流量: {get_current_traffic_text(user)}\n"
+                        f"动作: 已按定时计划关机"
+                    )
                     send_tg_alert(tg_conf, "定时计划", msg, "green")
                     mark_notified(state, instance_id, 'schedule_stopped')
             else:
@@ -283,7 +306,12 @@ def check_and_act(user, tg_conf, state):
                     state.setdefault(instance_id, {}).pop('last_retry_ts', None)
                     logger.info(f"[{name}] 实例已恢复运行 ✅")
                     if can_notify(state, instance_id, 'resumed'):
-                        msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 恢复运行 ✅"
+                        msg = (
+                            f"机器: {name}\n"
+                            f"计划时段: {schedule_desc(user)}\n"
+                            f"当前流量: {curr_gb:.2f}GB\n"
+                            f"动作: 恢复运行 ✅"
+                        )
                         send_tg_alert(tg_conf, "恢复监控", msg, "green")
                         mark_notified(state, instance_id, 'resumed')
                 else:

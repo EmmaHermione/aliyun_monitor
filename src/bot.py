@@ -327,7 +327,7 @@ def set_schedule(config, chat_id, key, start, end):
     user["schedule_start"] = start
     user["schedule_end"] = end
     save_config(config)
-    send_message(config, chat_id, f"⏰ 已设置 {user_label(user)} 定时: {start}-{end}")
+    send_message(config, chat_id, f"✅ [定时计划]\n\n机器: {user_label(user)}\n计划时段: {schedule_text(user)}\n动作: 已更新定时计划")
 
 
 def clear_schedule(config, chat_id, key):
@@ -337,7 +337,7 @@ def clear_schedule(config, chat_id, key):
         return
     user["schedule_enabled"] = False
     save_config(config)
-    send_message(config, chat_id, f"🗑 已删除 {user_label(user)} 的定时任务，恢复全天运行")
+    send_message(config, chat_id, f"✅ [定时计划]\n\n机器: {user_label(user)}\n动作: 已删除定时计划，恢复全天运行")
 
 
 def toggle_pause(config, chat_id, key):
@@ -350,7 +350,8 @@ def toggle_pause(config, chat_id, key):
     user.pop("disabled", None)
     save_config(config)
     state = "已暂停" if user["paused"] else "已恢复"
-    send_message(config, chat_id, f"⏸️ {user_label(user)} 监控{state}")
+    title = "暂停监控" if user["paused"] else "恢复监控"
+    send_message(config, chat_id, f"✅ [{title}]\n\n机器: {user_label(user)}\n动作: 监控{state}")
 
 
 def pending_key(chat_id):

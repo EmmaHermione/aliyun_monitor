@@ -71,6 +71,18 @@ def do_common_request(client, domain, version, action, params=None, method='POST
                 continue
             return None
 
+def get_traffic_text(user):
+    traffic_data = do_common_request(AcsClient(user['ak'].strip(), user['sk'].strip(), 'cn-hangzhou'), 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
+    traffic_gb = -1
+    if traffic_data:
+        traffic_gb = sum(d.get('Traffic', 0) for d in traffic_data.get('TrafficDetails', [])) / (1024**3)
+
+    if traffic_gb >= 0:
+        quota = user.get('traffic_limit', 180)
+        percent = (traffic_gb / quota) * 100
+        return f"{traffic_gb:.2f} GB ({percent:.1f}%)", traffic_gb
+    return "⚠️ 查询失败", traffic_gb
+
 def build_user_report(user):
     target_id = user.get('instance_id', '').strip()
     target_region = user.get('region', '').strip()
@@ -85,10 +97,7 @@ def build_user_report(user):
 
     client = AcsClient(user['ak'].strip(), user['sk'].strip(), target_region)
 
-    traffic_data = do_common_request(AcsClient(user['ak'].strip(), user['sk'].strip(), 'cn-hangzhou'), 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
-    traffic_gb = -1
-    if traffic_data:
-        traffic_gb = sum(d.get('Traffic', 0) for d in traffic_data.get('TrafficDetails', [])) / (1024**3)
+    traffic_str, traffic_gb = get_traffic_text(user)
 
     bill_amount = -1
     bill_currency = 'USD'
@@ -142,12 +151,6 @@ def build_user_report(user):
         schedule_str = f"{user.get('schedule_start', '00:00')}-{user.get('schedule_end', '23:59')}"
     else:
         schedule_str = "全天运行"
-
-    if traffic_gb >= 0:
-        percent = (traffic_gb / quota) * 100
-        traffic_str = f"{traffic_gb:.2f} GB ({percent:.1f}%)"
-    else:
-        traffic_str = "⚠️ 查询失败"
 
     bill_str = f"${bill_amount:.2f}" if bill_amount != -1 else "Fail"
     if bill_amount != -1 and bill_currency == 'CNY':
