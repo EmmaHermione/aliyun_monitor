@@ -153,6 +153,8 @@ def parse_hhmm(value):
         hour, minute = str(value).strip().split(':', 1)
         hour = int(hour)
         minute = int(minute)
+        if hour == 24 and minute == 0:
+            hour = 0
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             return hour * 60 + minute
     except Exception:

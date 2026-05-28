@@ -18,8 +18,32 @@ BOT_SERVICE="aliyun-monitor-bot.service"
 # 全局变量，用于在函数间传递生成的 JSON 数据
 CURRENT_USER_JSON=""
 
+function normalize_hhmm() {
+    local VALUE="$1"
+    local HOUR=""
+    local MINUTE=""
+
+    if [[ ! "$VALUE" =~ ^([0-9]{1,2}):([0-9]{1,2})$ ]]; then
+        return 1
+    fi
+
+    HOUR=$((10#${BASH_REMATCH[1]}))
+    MINUTE=$((10#${BASH_REMATCH[2]}))
+
+    if [ "$HOUR" -eq 24 ] && [ "$MINUTE" -eq 0 ]; then
+        HOUR=0
+    fi
+
+    if [ "$HOUR" -ge 0 ] && [ "$HOUR" -le 23 ] && [ "$MINUTE" -ge 0 ] && [ "$MINUTE" -le 59 ]; then
+        printf '%02d:%02d\n' "$HOUR" "$MINUTE"
+        return 0
+    fi
+
+    return 1
+}
+
 function is_hhmm() {
-    [[ "$1" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]
+    normalize_hhmm "$1" >/dev/null
 }
 
 function prompt_hhmm() {
@@ -31,11 +55,12 @@ function prompt_hhmm() {
     while true; do
         read -p "$PROMPT_TEXT" INPUT_VALUE
         INPUT_VALUE=${INPUT_VALUE:-$DEFAULT_VALUE}
-        if is_hhmm "$INPUT_VALUE"; then
-            printf -v "$VAR_NAME" "%s" "$INPUT_VALUE"
+        local NORMALIZED_VALUE=""
+        if NORMALIZED_VALUE=$(normalize_hhmm "$INPUT_VALUE"); then
+            printf -v "$VAR_NAME" "%s" "$NORMALIZED_VALUE"
             return
         fi
-        echo -e "${RED}时间格式无效，请输入 HH:MM，例如 09:00、12:30、00:00${NC}"
+        echo -e "${RED}时间格式无效，请输入 HH:MM，例如 09:00、12:30、00:00；也支持 0:00 或 24:00 自动转为 00:00${NC}"
     done
 }
 
@@ -100,9 +125,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${TARGET_DIR}
-ExecStart=${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py
+ExecStart=${VENV_DIR}/bin/python -u ${TARGET_DIR}/bot.py
 Restart=always
 RestartSec=5
+StandardOutput=append:${TARGET_DIR}/bot.log
+StandardError=append:${TARGET_DIR}/bot.log
 
 [Install]
 WantedBy=multi-user.target
@@ -110,7 +137,13 @@ EOF
         systemctl daemon-reload
         systemctl enable "${BOT_SERVICE}" >/dev/null 2>&1
         systemctl restart "${BOT_SERVICE}"
-        echo -e "${GREEN}✓ Telegram 机器人服务已启动: ${BOT_SERVICE}${NC}"
+        sleep 1
+        if systemctl is-active --quiet "${BOT_SERVICE}"; then
+            echo -e "${GREEN}✓ Telegram 机器人服务已启动: ${BOT_SERVICE}${NC}"
+        else
+            echo -e "${RED}✗ Telegram 机器人服务启动失败，请查看日志：journalctl -u ${BOT_SERVICE} -n 80 --no-pager${NC}"
+            return 1
+        fi
     else
         crontab -l > /tmp/cron_bk 2>/dev/null
         grep -v "aliyun_monitor_bot" /tmp/cron_bk > /tmp/cron_clean

@@ -210,14 +210,22 @@ def reboot_instance(user):
     client_for(user).do_action_with_exception(req)
 
 
-def is_hhmm(value):
+def normalize_hhmm(value):
     try:
-        hour, minute = str(value).split(":", 1)
+        hour, minute = str(value).strip().split(":", 1)
         hour = int(hour)
         minute = int(minute)
-        return 0 <= hour <= 23 and 0 <= minute <= 59
+        if hour == 24 and minute == 0:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
     except Exception:
-        return False
+        pass
+    return None
+
+
+def is_hhmm(value):
+    return normalize_hhmm(value) is not None
 
 
 def main_keyboard(config):
@@ -320,7 +328,9 @@ def set_schedule(config, chat_id, key, start, end):
     if user is None:
         send_message(config, chat_id, f"未找到实例: {key}")
         return
-    if not is_hhmm(start) or not is_hhmm(end):
+    start = normalize_hhmm(start)
+    end = normalize_hhmm(end)
+    if start is None or end is None:
         send_message(config, chat_id, "时间格式错误，请使用 HH:MM，例如 /schedule HK001 01:00 13:00")
         return
     user["schedule_enabled"] = True
@@ -483,6 +493,7 @@ def handle_update(config, update, state):
     if not text:
         return
     if not is_allowed(config, chat_id):
+        logging.warning("拒绝未授权 chat_id=%s", chat_id)
         send_message(config, chat_id, "无权限。")
         return
     if not text.strip().startswith("/") and handle_pending_schedule(config, state, chat_id, text):
@@ -496,13 +507,17 @@ def poll_once(config, state):
     if not data.get("ok"):
         time.sleep(5)
         return
-    for update in data.get("result", []):
+    updates = data.get("result", [])
+    if updates:
+        logging.info("收到 %s 条 Telegram 更新", len(updates))
+    for update in updates:
         state["offset"] = update["update_id"] + 1
         handle_update(load_config(), update, state)
     save_state(state)
 
 
 def main():
+    logging.info("Telegram Bot 服务启动")
     while True:
         config = load_config()
         if not tg_conf(config).get("bot_token") or not tg_conf(config).get("chat_id"):
