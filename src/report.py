@@ -48,7 +48,7 @@ def send_tg_report(tg_conf, message):
     except:
         pass
 
-def do_common_request(client, domain, version, action, params=None, method='POST', timeout=30, retries=3):
+def do_common_request(client, domain, version, action, params=None, method='POST', retries=1):
     for attempt in range(1, retries + 1):
         try:
             request = CommonRequest()
@@ -57,8 +57,8 @@ def do_common_request(client, domain, version, action, params=None, method='POST
             request.set_action_name(action)
             request.set_method(method)
             request.set_protocol_type('https')
-            request.set_connect_timeout(5000)   # 连接 5 秒内必须成功，避免黑洞 IP 卡死
-            request.set_read_timeout(15000)      # 读取 15 秒
+            request.set_connect_timeout(3000)   # 交互查询不要长时间卡住 Bot
+            request.set_read_timeout(8000)
             if params:
                 for k, v in params.items():
                     request.add_query_param(k, v)

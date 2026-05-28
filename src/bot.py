@@ -97,7 +97,11 @@ def tg_request(config, method, payload=None, timeout=20):
         resp = requests.post(api_url(config, method), json=payload or {}, timeout=timeout)
         data = resp.json()
         if not data.get("ok"):
-            logging.warning("Telegram API %s 失败: %s", method, data)
+            description = str(data.get("description", ""))
+            if method == "answerCallbackQuery" and "query is too old" in description:
+                logging.info("Telegram 按钮回调已过期，忽略: %s", description)
+            else:
+                logging.warning("Telegram API %s 失败: %s", method, data)
         return data
     except Exception as e:
         logging.error("Telegram API %s 异常: %s", method, e)
@@ -285,6 +289,7 @@ def show_instance(config, chat_id, index, message_id=None):
         send_message(config, chat_id, "实例不存在，请重新打开 /menu。")
         return
     user = all_users[index]
+    send_message(config, chat_id, f"正在查询 {user_label(user)}，请稍候...")
     try:
         from report import build_user_report
         detail = build_user_report(user)
@@ -307,15 +312,19 @@ def run_action(config, chat_id, action, index):
     name = user_label(user)
     try:
         if action == "start":
+            send_message(config, chat_id, f"正在发送开机指令: {name}")
             start_instance(user)
             send_message(config, chat_id, f"🟢 已发送开机指令: {name}")
         elif action == "stop":
+            send_message(config, chat_id, f"正在发送关机指令: {name}")
             stop_instance(user)
             send_message(config, chat_id, f"🔴 已发送关机指令: {name}")
         elif action == "reboot":
+            send_message(config, chat_id, f"正在发送重启指令: {name}")
             reboot_instance(user)
             send_message(config, chat_id, f"🔁 已发送重启指令: {name}")
         elif action == "status":
+            send_message(config, chat_id, f"正在查询 {name}，请稍候...")
             from report import build_user_report
             send_message(config, chat_id, build_user_report(user), parse_mode="Markdown")
     except Exception as e:
@@ -396,6 +405,7 @@ def handle_pending_schedule(config, state, chat_id, text):
 
 def send_report(config, chat_id):
     try:
+        send_message(config, chat_id, "正在生成日报，请稍候...")
         from report import build_report
         send_message(config, chat_id, build_report(config), parse_mode="Markdown")
     except Exception as e:
