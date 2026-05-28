@@ -4,6 +4,7 @@ import warnings
 import os
 import json
 import datetime
+import logging
 import requests
 
 # 修正 urllib3 在 Python 3.12 下引发的 SNI 丢失问题
@@ -31,6 +32,12 @@ except ImportError:
     sys.exit(1)
 
 CONFIG_FILE = '/opt/scripts/config.json'
+
+def billing_api_region(user):
+    bill_endpoint = user.get('bill_endpoint', '')
+    if 'ap-southeast-1' in bill_endpoint:
+        return 'ap-southeast-1'
+    return 'cn-hangzhou'
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -69,10 +76,12 @@ def do_common_request(client, domain, version, action, params=None, method='POST
                 import time
                 time.sleep(2 * attempt)
                 continue
+            logging.warning("API request failed: domain=%s action=%s error=%s", domain, action, e)
             return None
 
 def get_traffic_text(user):
-    traffic_data = do_common_request(AcsClient(user['ak'].strip(), user['sk'].strip(), 'cn-hangzhou'), 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
+    traffic_client = AcsClient(user['ak'].strip(), user['sk'].strip(), user.get('region', '').strip())
+    traffic_data = do_common_request(traffic_client, 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
     traffic_gb = -1
     if traffic_data:
         traffic_gb = sum(d.get('Traffic', 0) for d in traffic_data.get('TrafficDetails', [])) / (1024**3)
@@ -101,12 +110,14 @@ def build_user_report(user):
 
     bill_amount = -1
     bill_currency = 'USD'
+    bill_endpoint = user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')
+    bill_client = AcsClient(user['ak'].strip(), user['sk'].strip(), billing_api_region(user))
 
     bill_params = {
         'BillingCycle': datetime.datetime.now().strftime("%Y-%m"),
         'InstanceID': target_id
     }
-    bill_data = do_common_request(client, 'business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', bill_params, retries=1)
+    bill_data = do_common_request(bill_client, bill_endpoint, '2017-12-14', 'DescribeInstanceBill', bill_params, retries=1)
     if bill_data and bill_data.get('Success'):
         items = bill_data.get('Data', {}).get('Items', [])
         if items:
@@ -115,8 +126,7 @@ def build_user_report(user):
 
     if bill_amount == -1:
         bill_params2 = {'BillingCycle': datetime.datetime.now().strftime("%Y-%m")}
-        bill_endpoint = user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')
-        bill_data2 = do_common_request(client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
+        bill_data2 = do_common_request(bill_client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
         if bill_data2:
             items2 = bill_data2.get('Data', {}).get('Items', {}).get('Item', [])
             bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items2)
