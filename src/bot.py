@@ -5,7 +5,9 @@ import logging
 import os
 import socket
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from aliyunsdkcore.client import AcsClient
@@ -40,6 +42,32 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+
+TASK_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+ACTIVE_TASKS = 0
+ACTIVE_TASKS_LOCK = threading.Lock()
+
+
+def submit_task(config, chat_id, func, *args):
+    global ACTIVE_TASKS
+    with ACTIVE_TASKS_LOCK:
+        if ACTIVE_TASKS >= 2:
+            send_message(config, chat_id, "已有查询或操作正在执行，请稍后再试。")
+            return
+        ACTIVE_TASKS += 1
+
+    def runner():
+        global ACTIVE_TASKS
+        try:
+            func(*args)
+        except Exception as e:
+            logging.exception("后台任务执行失败")
+            send_message(config, chat_id, f"任务执行失败: {e}")
+        finally:
+            with ACTIVE_TASKS_LOCK:
+                ACTIVE_TASKS -= 1
+
+    TASK_EXECUTOR.submit(runner)
 
 
 def load_json(path, default):
@@ -421,7 +449,7 @@ def handle_command(config, chat_id, text, state=None):
         if user is None:
             send_message(config, chat_id, f"未找到实例: {parts[1]}")
             return
-        run_action(config, chat_id, "start", idx)
+        submit_task(config, chat_id, run_action, config, chat_id, "start", idx)
     elif command in ("/start", "/menu"):
         show_menu(config, chat_id)
     elif command == "/help":
@@ -432,17 +460,14 @@ def handle_command(config, chat_id, text, state=None):
             lines.append(f"{idx + 1}. {user_label(user)} | {user.get('instance_id')} | {schedule_text(user)}")
         send_message(config, chat_id, "\n".join(lines))
     elif command == "/report":
-        send_report(config, chat_id)
+        submit_task(config, chat_id, send_report, config, chat_id)
     elif command in ("/status", "/stop", "/reboot") and len(parts) >= 2:
         idx, user = find_user(config, parts[1])
         if user is None:
             send_message(config, chat_id, f"未找到实例: {parts[1]}")
             return
         action = command.lstrip("/")
-        if action == "status":
-            send_message(config, chat_id, instance_status_text(user))
-        else:
-            run_action(config, chat_id, action, idx)
+        submit_task(config, chat_id, run_action, config, chat_id, action, idx)
     elif command == "/schedule" and len(parts) >= 4:
         set_schedule(config, chat_id, parts[1], parts[2], parts[3])
     elif command in ("/unschedule", "/delschedule") and len(parts) >= 2:
@@ -466,12 +491,12 @@ def handle_callback(config, callback, state):
     if data == "menu":
         show_menu(config, chat_id, message_id)
     elif data == "report":
-        send_report(config, chat_id)
+        submit_task(config, chat_id, send_report, config, chat_id)
     elif data.startswith("select:"):
-        show_instance(config, chat_id, int(data.split(":", 1)[1]), message_id)
+        submit_task(config, chat_id, show_instance, config, chat_id, int(data.split(":", 1)[1]), message_id)
     elif data.startswith("act:"):
         _, action, idx = data.split(":", 2)
-        run_action(config, chat_id, action, int(idx))
+        submit_task(config, chat_id, run_action, config, chat_id, action, int(idx))
     elif data.startswith("sched_edit:"):
         idx = int(data.split(":", 1)[1])
         all_users = users(config)
@@ -489,7 +514,7 @@ def handle_callback(config, callback, state):
         all_users = users(config)
         if 0 <= idx < len(all_users):
             toggle_pause(config, chat_id, str(idx + 1))
-            show_instance(load_config(), chat_id, idx, message_id)
+            submit_task(config, chat_id, show_instance, load_config(), chat_id, idx, message_id)
 
 
 def handle_update(config, update, state):
