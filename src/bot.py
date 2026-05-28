@@ -46,6 +46,7 @@ logging.basicConfig(
 TASK_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 ACTIVE_TASKS = 0
 ACTIVE_TASKS_LOCK = threading.Lock()
+PROGRESS_TIMEOUT_SECONDS = 20
 
 
 def submit_task(config, chat_id, func, *args):
@@ -142,7 +143,7 @@ def send_message(config, chat_id, text, reply_markup=None, parse_mode=None):
         payload["reply_markup"] = reply_markup
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    tg_request(config, "sendMessage", payload)
+    return tg_request(config, "sendMessage", payload)
 
 
 def edit_message(config, chat_id, message_id, text, reply_markup=None, parse_mode=None):
@@ -151,7 +152,41 @@ def edit_message(config, chat_id, message_id, text, reply_markup=None, parse_mod
         payload["reply_markup"] = reply_markup
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    tg_request(config, "editMessageText", payload)
+    return tg_request(config, "editMessageText", payload)
+
+
+def delete_message(config, chat_id, message_id):
+    return tg_request(config, "deleteMessage", {"chat_id": chat_id, "message_id": message_id}, timeout=10)
+
+
+def begin_progress(config, chat_id, text, timeout_text=None, timeout_seconds=PROGRESS_TIMEOUT_SECONDS):
+    response = send_message(config, chat_id, text)
+    message_id = (response.get("result") or {}).get("message_id") if response.get("ok") else None
+    timed_out = threading.Event()
+    done = threading.Event()
+
+    def on_timeout():
+        if done.is_set() or not message_id:
+            return
+        timed_out.set()
+        edit_message(
+            config,
+            chat_id,
+            message_id,
+            timeout_text or "查询仍未返回，可能是阿里云接口或服务器网络超时，请稍后再试。",
+        )
+
+    timer = threading.Timer(timeout_seconds, on_timeout)
+    timer.daemon = True
+    timer.start()
+
+    def finish():
+        done.set()
+        timer.cancel()
+        if message_id:
+            delete_message(config, chat_id, message_id)
+
+    return finish
 
 
 def answer_callback(config, callback_id, text=""):
@@ -317,7 +352,12 @@ def show_instance(config, chat_id, index, message_id=None):
         send_message(config, chat_id, "实例不存在，请重新打开 /menu。")
         return
     user = all_users[index]
-    send_message(config, chat_id, f"正在查询 {user_label(user)}，请稍候...")
+    finish_progress = begin_progress(
+        config,
+        chat_id,
+        f"正在查询 {user_label(user)}，请稍候...",
+        f"{user_label(user)} 查询仍未返回，可能是阿里云接口或服务器网络超时，请稍后查看结果。",
+    )
     try:
         from report import build_user_report
         detail = build_user_report(user)
@@ -325,10 +365,13 @@ def show_instance(config, chat_id, index, message_id=None):
         logging.exception("查询实例状态失败")
         detail = f"📊 {user_label(user)}\n状态查询失败: {e}"
     text = f"✅ 已选: {user_label(user)}\n\n{detail}\n\n请选择操作："
-    if message_id:
-        edit_message(config, chat_id, message_id, text, instance_keyboard(index), parse_mode="Markdown")
-    else:
-        send_message(config, chat_id, text, instance_keyboard(index), parse_mode="Markdown")
+    try:
+        if message_id:
+            edit_message(config, chat_id, message_id, text, instance_keyboard(index), parse_mode="Markdown")
+        else:
+            send_message(config, chat_id, text, instance_keyboard(index), parse_mode="Markdown")
+    finally:
+        finish_progress()
 
 
 def run_action(config, chat_id, action, index):
@@ -338,26 +381,31 @@ def run_action(config, chat_id, action, index):
         return
     user = all_users[index]
     name = user_label(user)
+    action_name = {"start": "开机", "stop": "关机", "reboot": "重启", "status": "查询"}.get(action, action)
+    finish_progress = begin_progress(
+        config,
+        chat_id,
+        f"正在{action_name}: {name}",
+        f"{name} 的{action_name}操作仍未返回，可能是阿里云接口或服务器网络超时，请稍后查看结果。",
+    )
     try:
         if action == "start":
-            send_message(config, chat_id, f"正在发送开机指令: {name}")
             start_instance(user)
             send_message(config, chat_id, f"🟢 已发送开机指令: {name}")
         elif action == "stop":
-            send_message(config, chat_id, f"正在发送关机指令: {name}")
             stop_instance(user)
             send_message(config, chat_id, f"🔴 已发送关机指令: {name}")
         elif action == "reboot":
-            send_message(config, chat_id, f"正在发送重启指令: {name}")
             reboot_instance(user)
             send_message(config, chat_id, f"🔁 已发送重启指令: {name}")
         elif action == "status":
-            send_message(config, chat_id, f"正在查询 {name}，请稍候...")
             from report import build_user_report
             send_message(config, chat_id, build_user_report(user), parse_mode="Markdown")
     except Exception as e:
         logging.exception("执行 %s 失败", action)
         send_message(config, chat_id, f"❌ {name} 操作失败: {e}")
+    finally:
+        finish_progress()
 
 
 def set_schedule(config, chat_id, key, start, end):
@@ -432,13 +480,20 @@ def handle_pending_schedule(config, state, chat_id, text):
 
 
 def send_report(config, chat_id):
+    finish_progress = begin_progress(
+        config,
+        chat_id,
+        "正在生成日报，请稍候...",
+        "日报生成仍未返回，可能是阿里云 CDT/账单接口或服务器网络超时，请稍后查看结果。",
+    )
     try:
-        send_message(config, chat_id, "正在生成日报，请稍候...")
         from report import build_report
         send_message(config, chat_id, build_report(config), parse_mode="Markdown")
     except Exception as e:
         logging.exception("生成报告失败")
         send_message(config, chat_id, f"❌ 生成报告失败: {e}")
+    finally:
+        finish_progress()
 
 
 def handle_command(config, chat_id, text, state=None):
