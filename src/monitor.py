@@ -125,6 +125,7 @@ def get_current_traffic_text(user):
         req_traffic.set_version('2021-08-13')
         req_traffic.set_action_name('ListCdtInternetTraffic')
         req_traffic.set_method('POST')
+        req_traffic.set_protocol_type('https')
         req_traffic.set_connect_timeout(5000)
         req_traffic.set_read_timeout(15000)
         cdt_client = AcsClient(user['ak'], user['sk'], user['region'])
@@ -226,6 +227,7 @@ def check_and_act(user, tg_conf, state):
         req_traffic.set_version('2021-08-13')
         req_traffic.set_action_name('ListCdtInternetTraffic')
         req_traffic.set_method('POST')
+        req_traffic.set_protocol_type('https')
         req_traffic.set_connect_timeout(5000)   # 连接 5 秒内必须成功，避免黑洞 IP 卡死
         req_traffic.set_read_timeout(15000)      # 读取 15 秒
         cdt_client = AcsClient(user['ak'], user['sk'], user['region'])
