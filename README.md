@@ -288,7 +288,9 @@ timedatectl set-timezone Asia/Shanghai
 ## 👋 卸载
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/main/uninstall.sh | sh
+wget -O uninstall.sh https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/main/uninstall.sh
+sed -i 's/\r$//' uninstall.sh
+sh uninstall.sh
 ```
 
 ---
