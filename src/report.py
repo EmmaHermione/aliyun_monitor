@@ -92,17 +92,22 @@ def get_traffic_text(user):
         return f"{traffic_gb:.2f} GB ({percent:.1f}%)", traffic_gb
     return "⚠️ 查询失败", traffic_gb
 
+def status_icon_for_mode(status, stopped_mode):
+    mode = str(stopped_mode or '').strip()
+    if status == 'Running':
+        return '🟢'
+    if status == 'Stopped':
+        return '🔴' if mode == 'KeepCharging' else '⚫'
+    if status == 'NotFound':
+        return '❓'
+    return '🔴'
+
 def build_user_report(user):
     target_id = user.get('instance_id', '').strip()
     target_region = user.get('region', '').strip()
     resgroup = user.get('resgroup', '').strip()
     user_name = user.get('name', '').strip() or target_id or "Unknown_Device"
 
-    if user.get('paused') or user.get('disabled'):
-        return (
-            f"☁️ *{user_name}* (暂停)\n"
-            f"   ⏸️ 监控: 已暂停\n"
-        )
 
     client = AcsClient(user['ak'].strip(), user['sk'].strip(), target_region)
 
@@ -138,11 +143,12 @@ def build_user_report(user):
         ecs_params['ResourceGroupId'] = resgroup
     ecs_data = do_common_request(client, 'ecs.aliyuncs.com', '2014-05-26', 'DescribeInstances', ecs_params)
 
-    status, ip, spec = "NotFound", "N/A", "N/A"
+    status, ip, spec, stopped_mode = "NotFound", "N/A", "N/A", ""
     if ecs_data and 'Instances' in ecs_data:
         for inst in ecs_data['Instances'].get('Instance', []):
             if inst['InstanceId'] == target_id:
                 status = inst.get('Status', 'Unknown')
+                stopped_mode = inst.get('StoppedMode', '')
                 pub = inst.get('PublicIpAddress', {}).get('IpAddress', [])
                 eip = inst.get('EipAddress', {}).get('IpAddress', "")
                 ip = eip if eip else (pub[0] if pub else "无公网IP")
@@ -155,6 +161,7 @@ def build_user_report(user):
                 spec = f"{cpu}C{mem_str}G"
                 break
 
+    monitor_state = "⏸️ 已暂停" if (user.get('paused') or user.get('disabled')) else "▶️ 运行中"
     quota = user.get('traffic_limit', 180)
     bill_limit = user.get('bill_threshold', 1.0)
     if user.get('schedule_enabled'):
@@ -178,16 +185,13 @@ def build_user_report(user):
     if traffic_gb < 0:
         risk_str = "⚠️ 流量查询异常"
 
-    run_icon = "🟢" if status == "Running" else "🔴"
-    if status == "Stopped":
-        run_icon = "⚫"
-    if status == "NotFound":
-        run_icon = "❓"
+    run_icon = status_icon_for_mode(status, stopped_mode)
 
     return (
         f"☁️ *{user_name}* ({spec})\n"
         f"├🖥️ 状态: {run_icon} {status}\n"
         f"├🌐 IP: `{ip}`\n"
+        f"├🛡️ 监控: {monitor_state}\n"
         f"├⏱️ 计划: {schedule_str}\n"
         f"├📈 流量: {traffic_str}\n"
         f"├💰 账单: *{bill_str}*\n"

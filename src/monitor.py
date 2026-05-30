@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import json
 import sys
 import logging
@@ -149,6 +149,12 @@ def get_instance_status(client, instance_id):
         return None
     return instances[0].get("Status")
 
+def stop_instance_in_saving_mode(client, instance_id):
+    stop_req = StopInstanceRequest()
+    stop_req.set_InstanceId(instance_id)
+    stop_req.set_StoppedMode("StopCharging")
+    client.do_action_with_exception(stop_req)
+
 def parse_hhmm(value):
     try:
         hour, minute = str(value).strip().split(':', 1)
@@ -196,7 +202,7 @@ def check_and_act(user, tg_conf, state):
     try:
         client = AcsClient(user['ak'], user['sk'], user['region'])
 
-        # 1. 获取实例当前状态，先执行计划窗口判断，避免流量查询失败影响定时计划关机
+        # 1. 获取实例当前状态，先执行计划窗口判断，避免流量查询失败影响定时计划节省停机
         status = get_instance_status(client, instance_id)
         if status is None:
             logger.error(f"[{name}] 未找到实例: {instance_id}")
@@ -204,16 +210,14 @@ def check_and_act(user, tg_conf, state):
 
         if not is_in_schedule_window(user):
             if status == "Running":
-                logger.info(f"[{name}] 当前不在计划运行时段({schedule_desc(user)})，正在停止实例...")
-                stop_req = StopInstanceRequest()
-                stop_req.set_InstanceId(instance_id)
-                client.do_action_with_exception(stop_req)
+                logger.info(f"[{name}] 当前不在计划运行时段({schedule_desc(user)})，正在节省停机实例...")
+                stop_instance_in_saving_mode(client, instance_id)
                 if can_notify(state, instance_id, 'schedule_stopped'):
                     msg = (
                         f"机器: {name}\n"
                         f"计划时段: {schedule_desc(user)}\n"
                         f"当前流量: {get_current_traffic_text(user)}\n"
-                        f"动作: 已按定时计划关机"
+                        f"动作: 已按定时计划节省停机"
                     )
                     send_tg_alert(tg_conf, "定时计划", msg, "green")
                     mark_notified(state, instance_id, 'schedule_stopped')
@@ -341,19 +345,17 @@ def check_and_act(user, tg_conf, state):
         else:
             # ---- 流量超标 ----
             if status == "Running":
-                logger.info(f"[{name}] 流量超标({curr_gb:.2f}GB >= {limit}GB)，正在停止...")
-                stop_req = StopInstanceRequest()
-                stop_req.set_InstanceId(instance_id)
-                client.do_action_with_exception(stop_req)
+                logger.info(f"[{name}] 流量超标({curr_gb:.2f}GB >= {limit}GB)，正在节省停机...")
+                stop_instance_in_saving_mode(client, instance_id)
                 if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发止损关机 \U0001f6d1"
+                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发止损节省停机 \U0001f6d1"
                     send_tg_alert(tg_conf, "流量预警", msg, "red")
                     mark_notified(state, instance_id, 'overlimit')
             else:
                 # 已处于停止状态，每天提醒一次
                 logger.info(f"[{name}] 已停止止损 - {curr_gb:.2f}GB")
                 if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n状态: 流量超标，已保持关机 \U0001f6d1"
+                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n状态: 流量超标，已保持节省停机 \U0001f6d1"
                     send_tg_alert(tg_conf, "流量超标提醒", msg, "red")
                     mark_notified(state, instance_id, 'overlimit')
 

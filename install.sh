@@ -223,7 +223,7 @@ function get_single_user_json() {
     echo -e "${CYAN}💡 提示: 请前往 ECS 控制台 -> 实例列表 -> 实例 ID 列 (以 i- 开头)${NC}"
     read -p "ECS 实例 ID: " INSTANCE
     
-    read -p "关机阈值 (GB, 默认180): " LIMIT
+    read -p "节省停机阈值 (GB, 默认180): " LIMIT
     LIMIT=${LIMIT:-180}
 
     echo -e "\n${CYAN}💡 可选: 为该实例设置每日运行时段，用于多台服务器按定时计划使用 CDT${NC}"

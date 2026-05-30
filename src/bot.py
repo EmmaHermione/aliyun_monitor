@@ -232,6 +232,16 @@ def get_status(user):
     return instances[0].get("Status", "Unknown"), instances[0]
 
 
+def status_icon_for_mode(status, stopped_mode):
+    mode = str(stopped_mode or '').strip()
+    if status == 'Running':
+        return '🟢'
+    if status == 'Stopped':
+        return '🔴' if mode == 'KeepCharging' else '⚫'
+    if status == 'NotFound':
+        return '❓'
+    return '🔴'
+
 def schedule_text(user):
     if not user.get("schedule_enabled"):
         return "全天运行"
@@ -242,17 +252,19 @@ def instance_status_text(user):
     status, inst = get_status(user)
     ip = "N/A"
     spec = "N/A"
+    stopped_mode = ""
     if inst:
         public_ips = inst.get("PublicIpAddress", {}).get("IpAddress", [])
         eip = inst.get("EipAddress", {}).get("IpAddress", "")
         ip = eip or (public_ips[0] if public_ips else "无公网IP")
         mem_gb = inst.get("Memory", 0) / 1024
         spec = f"{inst.get('Cpu', 0)}C{mem_gb:g}G"
+        stopped_mode = inst.get("StoppedMode", "")
     return (
         f"📊 {user_label(user)}\n"
         f"实例: {user.get('instance_id')}\n"
         f"区域: {user.get('region')}\n"
-        f"状态: {status}\n"
+        f"状态: {status_icon_for_mode(status, stopped_mode)} {status}\n"
         f"规格: {spec}\n"
         f"IP: {ip}\n"
         f"计划: {schedule_text(user)}"
@@ -268,6 +280,7 @@ def start_instance(user):
 def stop_instance(user):
     req = StopInstanceRequest()
     req.set_InstanceId(user["instance_id"])
+    req.set_StoppedMode("StopCharging")
     client_for(user).do_action_with_exception(req)
 
 
@@ -307,7 +320,7 @@ def instance_keyboard(index):
         "inline_keyboard": [
             [
                 {"text": "🟢 开机", "callback_data": f"act:start:{index}"},
-                {"text": "🔴 关机", "callback_data": f"act:stop:{index}"},
+                {"text": "🔴 节省停机", "callback_data": f"act:stop:{index}"},
             ],
             [
                 {"text": "🔁 重启", "callback_data": f"act:reboot:{index}"},
@@ -328,7 +341,7 @@ HELP_TEXT = """可用命令:
 /report - 获取当前日报内容
 /status 机器名或序号 - 查询状态
 /start 机器名或序号 - 开机
-/stop 机器名或序号 - 关机
+/stop 机器名或序号 - 节省停机
 /reboot 机器名或序号 - 重启
 /schedule 机器名或序号 HH:MM HH:MM - 设置每日运行窗口
 /unschedule 机器名或序号 - 删除定时窗口
@@ -381,7 +394,7 @@ def run_action(config, chat_id, action, index):
         return
     user = all_users[index]
     name = user_label(user)
-    action_name = {"start": "开机", "stop": "关机", "reboot": "重启", "status": "查询"}.get(action, action)
+    action_name = {"start": "开机", "stop": "节省停机", "reboot": "重启", "status": "查询"}.get(action, action)
     finish_progress = begin_progress(
         config,
         chat_id,
@@ -394,7 +407,7 @@ def run_action(config, chat_id, action, index):
             send_message(config, chat_id, f"🟢 已发送开机指令: {name}")
         elif action == "stop":
             stop_instance(user)
-            send_message(config, chat_id, f"🔴 已发送关机指令: {name}")
+            send_message(config, chat_id, f"🔴 已发送节省停机指令: {name}")
         elif action == "reboot":
             reboot_instance(user)
             send_message(config, chat_id, f"🔁 已发送重启指令: {name}")
