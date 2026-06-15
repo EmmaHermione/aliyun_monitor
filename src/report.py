@@ -104,6 +104,14 @@ def status_icon_for_mode(status, stopped_mode):
         return '❓'
     return '🔴'
 
+def override_desc(user):
+    override = user.get('manual_override')
+    if override == 'run':
+        return '手动保持运行'
+    if override == 'stop':
+        return '手动保持停机'
+    return ''
+
 def build_user_report(user):
     target_id = user.get('instance_id', '').strip()
     target_region = user.get('region', '').strip()
@@ -182,16 +190,20 @@ def build_user_report(user):
     risk_str = "✅ 无风险"
     if traffic_gb >= 0 and traffic_gb > quota:
         risk_str = "⚠️ 流量超标"
-    if bill_amount > bill_limit:
+    if bill_amount >= bill_limit:
         risk_str = "💸 扣费预警"
     if traffic_gb < 0:
         risk_str = "⚠️ 流量查询异常"
 
-    run_icon = status_icon_for_mode(status, stopped_mode)
+    override_status = override_desc(user)
+    if override_status:
+        status_line = f"🔴 {override_status}"
+    else:
+        status_line = f"{status_icon_for_mode(status, stopped_mode)} {status}"
 
     return (
         f"☁️ *{user_name}* ({spec})\n"
-        f"├🖥️ 状态: {run_icon} {status}\n"
+        f"├🖥️ 状态: {status_line}\n"
         f"├🌐 IP: `{ip}`\n"
         f"├🌍 DDNS: {ddns_desc(user)}\n"
         f"├🛡️ 监控: {monitor_state}\n"

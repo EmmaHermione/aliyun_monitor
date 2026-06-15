@@ -221,7 +221,7 @@ function update_scripts_keep_config() {
 
 # 收集单个用户信息的函数
 function get_single_user_json() {
-    local AK="" SK="" REGION="" INSTANCE="" NAME="" LIMIT="" BILL_ENDPOINT="" CURRENCY=""
+    local AK="" SK="" REGION="" INSTANCE="" NAME="" LIMIT="" BILL_THRESHOLD="" BILL_ENDPOINT="" CURRENCY=""
     local SCHEDULE_ENABLED="false" SCHEDULE_START="00:00" SCHEDULE_END="23:59"
     local DDNS_ENABLED="false" DDNS_TOKEN="" DDNS_ZONE_ID="" DDNS_RECORD_NAME="" DDNS_RECORD_TYPE="A"
 
@@ -274,6 +274,8 @@ function get_single_user_json() {
     
     read -p "节省停机阈值 (GB, 默认180): " LIMIT
     LIMIT=${LIMIT:-180}
+    read -p "账单止损阈值 (美元, 国内账号自动按约7倍人民币判断, 默认1): " BILL_THRESHOLD
+    BILL_THRESHOLD=${BILL_THRESHOLD:-1}
 
     echo -e "\n${CYAN}💡 可选: 为该实例设置每日运行时段，用于多台服务器按定时计划使用 CDT${NC}"
     echo -e "${CYAN}   示例: A 机器 00:00-12:00，B 机器 12:00-00:00${NC}"
@@ -296,7 +298,7 @@ function get_single_user_json() {
     fi
 
     # 将构建好的 JSON 字符串赋值给全局变量 (去除了 resgroup，加入了 bill_endpoint 和 currency)
-    CURRENT_USER_JSON="{\"name\": \"$NAME\", \"ak\": \"$AK\", \"sk\": \"$SK\", \"region\": \"$REGION\", \"instance_id\": \"$INSTANCE\", \"traffic_limit\": $LIMIT, \"quota\": 200, \"bill_endpoint\": \"$BILL_ENDPOINT\", \"currency\": \"$CURRENCY\", \"paused\": false, \"schedule_enabled\": $SCHEDULE_ENABLED, \"schedule_start\": \"$SCHEDULE_START\", \"schedule_end\": \"$SCHEDULE_END\", \"ddns_enabled\": $DDNS_ENABLED, \"ddns_provider\": \"cloudflare\", \"ddns_token\": \"$DDNS_TOKEN\", \"ddns_zone_id\": \"$DDNS_ZONE_ID\", \"ddns_record_name\": \"$DDNS_RECORD_NAME\", \"ddns_record_type\": \"$DDNS_RECORD_TYPE\"}"
+    CURRENT_USER_JSON="{\"name\": \"$NAME\", \"ak\": \"$AK\", \"sk\": \"$SK\", \"region\": \"$REGION\", \"instance_id\": \"$INSTANCE\", \"traffic_limit\": $LIMIT, \"quota\": 200, \"bill_threshold\": $BILL_THRESHOLD, \"bill_endpoint\": \"$BILL_ENDPOINT\", \"currency\": \"$CURRENCY\", \"paused\": false, \"schedule_enabled\": $SCHEDULE_ENABLED, \"schedule_start\": \"$SCHEDULE_START\", \"schedule_end\": \"$SCHEDULE_END\", \"ddns_enabled\": $DDNS_ENABLED, \"ddns_provider\": \"cloudflare\", \"ddns_token\": \"$DDNS_TOKEN\", \"ddns_zone_id\": \"$DDNS_ZONE_ID\", \"ddns_record_name\": \"$DDNS_RECORD_NAME\", \"ddns_record_type\": \"$DDNS_RECORD_TYPE\"}"
 }
 
 # 完整安装流程 (首次运行)
@@ -544,7 +546,7 @@ else:
         start = u.get('schedule_start', '00:00')
         end = u.get('schedule_end', '23:59')
         schedule = f'{start}-{end}' if enabled else '全天运行'
-        print(f' [{i}] 备注名: {u.get(\"name\")} | 实例ID: {u.get(\"instance_id\")} | 区域: {u.get(\"region\")} | 阈值: {u.get(\"traffic_limit\", 180)}GB | 状态: {paused} | 计划: {schedule}')
+        print(f' [{i}] 备注名: {u.get(\"name\")} | 实例ID: {u.get(\"instance_id\")} | 区域: {u.get(\"region\")} | 流量阈值: {u.get(\"traffic_limit\", 180)}GB | 账单阈值: {u.get(\"bill_threshold\", 1)}美元 | 状态: {paused} | 计划: {schedule}')
 "
                 echo ""
                 read -p "请输入要修改基础配置的实例序号 (输入 q 取消): " EDIT_IDX
@@ -588,6 +590,7 @@ else:
 
                 read -p "新的 ECS 实例 ID: " EDIT_INSTANCE
                 read -p "新的节省停机阈值 GB: " EDIT_LIMIT
+                read -p "新的账单止损阈值 (美元, 国内账号自动按约7倍人民币判断): " EDIT_BILL_THRESHOLD
 
                 echo -e "\n${CYAN}Cloudflare DDNS，直接回车保持原值，输入 y 开启/更新，输入 n 关闭：${NC}"
                 read -p "是否启用 DDNS? (y/n): " EDIT_DDNS_ENABLE
@@ -603,7 +606,7 @@ else:
                     EDIT_DDNS_RECORD_TYPE=${EDIT_DDNS_RECORD_TYPE:-A}
                 fi
 
-                EDIT_IDX="$EDIT_IDX" EDIT_NAME="$EDIT_NAME" EDIT_AK="$EDIT_AK" EDIT_SK="$EDIT_SK" EDIT_ACC_TYPE="$EDIT_ACC_TYPE" EDIT_REGION="$EDIT_REGION" EDIT_INSTANCE="$EDIT_INSTANCE" EDIT_LIMIT="$EDIT_LIMIT" EDIT_DDNS_ENABLE="$EDIT_DDNS_ENABLE" EDIT_DDNS_TOKEN="$EDIT_DDNS_TOKEN" EDIT_DDNS_ZONE_ID="$EDIT_DDNS_ZONE_ID" EDIT_DDNS_RECORD_NAME="$EDIT_DDNS_RECORD_NAME" EDIT_DDNS_RECORD_TYPE="$EDIT_DDNS_RECORD_TYPE" CONFIG_FILE="$CONFIG_FILE" python3 -c '
+                EDIT_IDX="$EDIT_IDX" EDIT_NAME="$EDIT_NAME" EDIT_AK="$EDIT_AK" EDIT_SK="$EDIT_SK" EDIT_ACC_TYPE="$EDIT_ACC_TYPE" EDIT_REGION="$EDIT_REGION" EDIT_INSTANCE="$EDIT_INSTANCE" EDIT_LIMIT="$EDIT_LIMIT" EDIT_BILL_THRESHOLD="$EDIT_BILL_THRESHOLD" EDIT_DDNS_ENABLE="$EDIT_DDNS_ENABLE" EDIT_DDNS_TOKEN="$EDIT_DDNS_TOKEN" EDIT_DDNS_ZONE_ID="$EDIT_DDNS_ZONE_ID" EDIT_DDNS_RECORD_NAME="$EDIT_DDNS_RECORD_NAME" EDIT_DDNS_RECORD_TYPE="$EDIT_DDNS_RECORD_TYPE" CONFIG_FILE="$CONFIG_FILE" python3 -c '
 import json
 import os
 import sys
@@ -651,6 +654,14 @@ if limit:
         user["traffic_limit"] = int(limit_value) if limit_value.is_integer() else limit_value
     except Exception:
         print("\033[1;33m⚠️ 停机阈值不是有效数字，已保持原值。\033[0m")
+
+bill_threshold = os.environ.get("EDIT_BILL_THRESHOLD", "").strip()
+if bill_threshold:
+    try:
+        bill_threshold_value = float(bill_threshold)
+        user["bill_threshold"] = int(bill_threshold_value) if bill_threshold_value.is_integer() else bill_threshold_value
+    except Exception:
+        print("\033[1;33m⚠️ 账单止损阈值不是有效数字，已保持原值。\033[0m")
 
 ddns_enable = os.environ.get("EDIT_DDNS_ENABLE", "").strip().lower()
 if ddns_enable in ("y", "yes"):

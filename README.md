@@ -43,7 +43,7 @@
 ## ⭐ 运行截图
 
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/381e346d-604b-47c7-9970-e4e29c87bfb0" width="320" alt="运行截图" />
+  <img src="assets/example.png" width="320" alt="运行截图" />
   <br>
   <p><i>运行效果预览</i></p>
 </div>
@@ -131,7 +131,7 @@ bash aliyun-monitor.sh
 
 `monitor.py` 每 5 分钟运行一次，并逐个读取 `/opt/scripts/config.json` 中的实例配置：
 
-- 当前时间在该实例的计划时段内：执行流量止损逻辑，流量安全则启动或保持运行，流量超标则调用 ECS `StopInstance` 并指定 `StoppedMode=StopCharging`。
+- 当前时间在该实例的计划时段内：执行流量与账单止损逻辑，流量和账单均安全则启动或保持运行，任一项超标则调用 ECS `StopInstance` 并指定 `StoppedMode=StopCharging`。
 - 当前时间不在该实例的计划时段内：如果实例正在运行，则自动以 `StopCharging` 节省停机；如果已经停止，则保持停止状态。
 - 未启用计划时段的实例：保持原来的全天监控行为。
 
@@ -151,6 +151,8 @@ timedatectl set-timezone Asia/Shanghai
 开始时间 HH:MM:
 结束时间 HH:MM:
 ```
+
+安装时也会提示设置账单止损阈值。该值以美元为基准，默认 `1`；国内人民币账单会自动按约 7 倍换算，即默认超过约 `¥7` 触发账单预警与节省停机。
 
 时间会保存为标准 `HH:MM` 格式，例如：
 
@@ -215,7 +217,7 @@ timedatectl set-timezone Asia/Shanghai
 
 选择 `1) 查看实例状态 (List)`，可以只读查看实例 ID、区域、暂停状态、运行窗口和 DDNS 配置。
 
-选择 `3) 修改实例配置/DDNS (Edit)`，即可修改已有实例的备注名、AccessKey ID、AccessKey Secret、账号类型、ECS Region、ECS 实例 ID、节省停机阈值和 Cloudflare DDNS 配置。每个字段直接回车会保持原值，只输入需要修改的内容即可。
+选择 `3) 修改实例配置/DDNS (Edit)`，即可修改已有实例的备注名、AccessKey ID、AccessKey Secret、账号类型、ECS Region、ECS 实例 ID、流量节省停机阈值、账单止损阈值和 Cloudflare DDNS 配置。每个字段直接回车会保持原值，只输入需要修改的内容即可。
 
 选择 `4) 修改运行窗口 (Schedule)`，即可为已有实例开启、关闭或修改运行窗口。
 
@@ -292,6 +294,7 @@ Telegram 通知回显 DDNS 结果
 - `✏️ 修改定时`
 - `🗑 删除定时`
 - `⏸️ 暂停/恢复监控`
+- `🧹 清除手动覆盖`
 
 点击 `✏️ 修改定时` 后，Bot 会等待您输入新的开始时间和结束时间。直接发送：
 
@@ -313,9 +316,14 @@ Telegram 通知回显 DDNS 结果
 /reboot 机器名或序号
 /schedule 机器名或序号 HH:MM HH:MM
 /unschedule 机器名或序号
+/clearoverride 机器名或序号
 ```
 
 其中 `/report` 会立即生成并发送当前日报内容，与每天定时发送的日报使用同一套统计逻辑。日报状态图标同样会区分停机模式：`⚫ Stopped` 表示节省停机，`🔴 Stopped` 表示普通停机；运行中显示 `🟢 Running`。
+
+通过 Bot 手动开机或重启会设置 `manual_override=run`，巡检会在流量和账单安全时保持该实例运行，即使当前不在定时窗口内。手动节省停机会设置 `manual_override=stop`，巡检会保持停机，即使当前处于定时窗口内。
+
+手动覆盖不会绕过流量或账单止损；任一阈值超标时仍会优先节省停机。需要恢复按定时计划自动接管时，点击 `🧹 清除手动覆盖`，或发送 `/clearoverride 机器名或序号`。
 
 ---
 

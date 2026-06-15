@@ -144,6 +144,85 @@ def get_current_traffic_gb(user):
     total_bytes = sum(d.get('Traffic', 0) for d in data_traffic.get('TrafficDetails', []))
     return total_bytes / (1024 ** 3)
 
+def billing_api_region(user):
+    bill_endpoint = user.get('bill_endpoint', '')
+    if 'ap-southeast-1' in bill_endpoint:
+        return 'ap-southeast-1'
+    return 'cn-hangzhou'
+
+def do_common_request(client, domain, version, action, params=None, method='POST', retries=1):
+    for attempt in range(1, retries + 1):
+        try:
+            request = CommonRequest()
+            request.set_domain(domain)
+            request.set_version(version)
+            request.set_action_name(action)
+            request.set_method(method)
+            request.set_protocol_type('https')
+            request.set_connect_timeout(5000)
+            request.set_read_timeout(15000)
+            if params:
+                for k, v in params.items():
+                    request.add_query_param(k, v)
+            response = client.do_action_with_exception(request)
+            return json.loads(response.decode('utf-8'))
+        except Exception as e:
+            if attempt < retries:
+                time.sleep(2 * attempt)
+                continue
+            logger.warning("API request failed: domain=%s action=%s error=%s", domain, action, e)
+            return None
+
+def get_current_bill_info(user):
+    instance_id = user.get('instance_id', '').strip()
+    bill_endpoint = user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')
+    bill_client = AcsClient(user['ak'].strip(), user['sk'].strip(), billing_api_region(user))
+    billing_cycle = datetime.datetime.now().strftime("%Y-%m")
+
+    bill_data = do_common_request(
+        bill_client,
+        bill_endpoint,
+        '2017-12-14',
+        'DescribeInstanceBill',
+        {'BillingCycle': billing_cycle, 'InstanceID': instance_id},
+        retries=1,
+    )
+    if bill_data and bill_data.get('Success'):
+        items = bill_data.get('Data', {}).get('Items', [])
+        if items:
+            amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
+            return amount, items[0].get('Currency', 'USD')
+
+    bill_data = do_common_request(
+        bill_client,
+        bill_endpoint,
+        '2017-12-14',
+        'QueryBillOverview',
+        {'BillingCycle': billing_cycle},
+        retries=1,
+    )
+    if bill_data:
+        items = bill_data.get('Data', {}).get('Items', {}).get('Item', [])
+        if items:
+            amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
+            return amount, items[0].get('Currency', 'USD')
+        return 0.0, 'CNY' if user.get('currency') == '¥' else 'USD'
+
+    raise RuntimeError("账单查询失败")
+
+def bill_limit_for_currency(user, bill_currency):
+    limit = float(user.get('bill_threshold', 1.0))
+    if bill_currency == 'CNY':
+        return limit * 7.0
+    return limit
+
+def format_bill_amount(amount, currency):
+    if currency == 'CNY':
+        return f"¥{amount:.2f}"
+    if currency == 'USD':
+        return f"${amount:.2f}"
+    return f"{currency} {amount:.2f}"
+
 # ---------- 查询实例状态 ----------
 
 def get_instance_status(client, instance_id):
@@ -245,6 +324,7 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
     instance_id = user['instance_id']
     name        = user.get('name', instance_id)
     in_window = is_in_schedule_window(user)
+    manual_override = user.get('manual_override')
     result = {
         "instance_id": instance_id,
         "name": name,
@@ -269,7 +349,7 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
         status = instance.get("Status")
         result["status"] = status
 
-        if not in_window:
+        if not in_window and manual_override != 'run':
             if status == "Running":
                 if not allow_schedule_stop:
                     try:
@@ -302,10 +382,44 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
 
         # 2. 获取流量
         curr_gb = get_current_traffic_gb(user)
+        bill_amount, bill_currency = get_current_bill_info(user)
         clear_handoff_grace(state, instance_id)
 
         # 3. 决策
         limit = user.get('traffic_limit', 180)
+        bill_limit = bill_limit_for_currency(user, bill_currency)
+        bill_text = format_bill_amount(bill_amount, bill_currency)
+        bill_limit_text = format_bill_amount(bill_limit, bill_currency)
+
+        if bill_amount >= bill_limit:
+            if status == "Running":
+                logger.info(f"[{name}] 账单超标({bill_text} >= {bill_limit_text})，正在节省停机...")
+                stop_instance_in_saving_mode(client, instance_id)
+                result["status"] = "Stopping"
+                if can_notify(state, instance_id, 'bill_overlimit', OVERLIMIT_COOLDOWN):
+                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n动作: 已触发账单止损节省停机 \U0001f6d1"
+                    send_tg_alert(tg_conf, "账单预警", msg, "red")
+                    mark_notified(state, instance_id, 'bill_overlimit')
+            else:
+                logger.info(f"[{name}] 账单超标({bill_text} >= {bill_limit_text})，保持节省停机")
+                if can_notify(state, instance_id, 'bill_overlimit', OVERLIMIT_COOLDOWN):
+                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n状态: 账单超标，已保持节省停机 \U0001f6d1"
+                    send_tg_alert(tg_conf, "账单超标提醒", msg, "red")
+                    mark_notified(state, instance_id, 'bill_overlimit')
+            return result
+
+        if manual_override == 'stop':
+            if status == "Running":
+                logger.info(f"[{name}] 手动覆盖保持停机，正在节省停机...")
+                stop_instance_in_saving_mode(client, instance_id)
+                result["status"] = "Stopping"
+                if can_notify(state, instance_id, 'manual_override_stop'):
+                    msg = f"机器: {name}\n动作: 手动覆盖保持停机，已执行节省停机"
+                    send_tg_alert(tg_conf, "手动覆盖", msg, "green")
+                    mark_notified(state, instance_id, 'manual_override_stop')
+            else:
+                logger.info(f"[{name}] 手动覆盖保持停机，实例状态: {status}")
+            return result
 
         if curr_gb < limit:
             # ---- 流量安全 ----

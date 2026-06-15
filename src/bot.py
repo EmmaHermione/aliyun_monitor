@@ -265,6 +265,15 @@ def schedule_text(user):
     return f"{user.get('schedule_start', '00:00')}-{user.get('schedule_end', '23:59')}"
 
 
+def override_text(user):
+    override = user.get("manual_override")
+    if override == "run":
+        return "手动保持运行"
+    if override == "stop":
+        return "手动保持停机"
+    return ""
+
+
 def instance_status_text(user):
     status, inst = get_status(user)
     ip = "N/A"
@@ -277,11 +286,13 @@ def instance_status_text(user):
         mem_gb = inst.get("Memory", 0) / 1024
         spec = f"{inst.get('Cpu', 0)}C{mem_gb:g}G"
         stopped_mode = inst.get("StoppedMode", "")
+    override_status = override_text(user)
+    status_line = f"🔴 {override_status}" if override_status else f"{status_icon_for_mode(status, stopped_mode)} {status}"
     return (
         f"📊 {user_label(user)}\n"
         f"实例: {user.get('instance_id')}\n"
         f"区域: {user.get('region')}\n"
-        f"状态: {status_icon_for_mode(status, stopped_mode)} {status}\n"
+        f"状态: {status_line}\n"
         f"规格: {spec}\n"
         f"IP: {ip}\n"
         f"🌍 DDNS: {ddns_desc(user)}\n"
@@ -348,6 +359,7 @@ def instance_keyboard(index):
                 {"text": "🗑 删除定时", "callback_data": f"unschedule:{index}"},
                 {"text": "⏸️ 暂停/恢复监控", "callback_data": f"toggle_pause:{index}"},
             ],
+            [{"text": "🧹 清除手动覆盖", "callback_data": f"clear_override:{index}"}],
             [{"text": "⬅️ 返回", "callback_data": "menu"}],
         ]
     }
@@ -363,10 +375,12 @@ HELP_TEXT = """可用命令:
 /reboot 机器名或序号 - 重启
 /schedule 机器名或序号 HH:MM HH:MM - 设置每日运行窗口
 /unschedule 机器名或序号 - 删除定时窗口
+/clearoverride 机器名或序号 - 清除手动覆盖
 
 示例:
 /schedule HK001 01:00 13:00
-/unschedule HK001"""
+/unschedule HK001
+/clearoverride HK001"""
 
 
 def show_menu(config, chat_id, message_id=None):
@@ -421,21 +435,27 @@ def run_action(config, chat_id, action, index):
     )
     try:
         if action == "start":
+            user["manual_override"] = "run"
+            save_config(config)
             start_instance(user)
             status, inst = wait_until_running(user)
             if status == "Running":
                 public_ip = instance_public_ip(inst)
                 ddns_result = sync_ddns(user, public_ip) if is_ddns_enabled(user) else None
                 ddns_line = f"\n{ddns_result['message']}" if ddns_result else ""
-                send_message(config, chat_id, f"🟢 已开机: {name}\n状态: {status}\n公网 IP: {public_ip or '无公网IP'}{ddns_line}")
+                send_message(config, chat_id, f"🟢 已开机: {name}\n状态: {status}\n手动覆盖: 保持运行\n公网 IP: {public_ip or '无公网IP'}{ddns_line}")
             else:
-                send_message(config, chat_id, f"🟢 已发送开机指令: {name}\n当前状态: {status}")
+                send_message(config, chat_id, f"🟢 已发送开机指令: {name}\n当前状态: {status}\n手动覆盖: 保持运行")
         elif action == "stop":
+            user["manual_override"] = "stop"
+            save_config(config)
             stop_instance(user)
-            send_message(config, chat_id, f"🔴 已发送节省停机指令: {name}")
+            send_message(config, chat_id, f"🔴 已发送节省停机指令: {name}\n手动覆盖: 保持停机")
         elif action == "reboot":
+            user["manual_override"] = "run"
+            save_config(config)
             reboot_instance(user)
-            send_message(config, chat_id, f"🔁 已发送重启指令: {name}")
+            send_message(config, chat_id, f"🔁 已发送重启指令: {name}\n手动覆盖: 保持运行")
         elif action == "status":
             from report import build_user_report
             send_message(config, chat_id, build_user_report(user), parse_mode="Markdown")
@@ -485,6 +505,16 @@ def toggle_pause(config, chat_id, key):
     state = "已暂停" if user["paused"] else "已恢复"
     title = "暂停监控" if user["paused"] else "恢复监控"
     send_message(config, chat_id, f"✅ *[{title}]*\n\n机器: {user_label(user)}\n动作: 监控{state}", parse_mode="Markdown")
+
+
+def clear_manual_override(config, chat_id, key):
+    idx, user = find_user(config, key)
+    if user is None:
+        send_message(config, chat_id, f"未找到实例: {key}")
+        return
+    user.pop("manual_override", None)
+    save_config(config)
+    send_message(config, chat_id, f"✅ *[清除手动覆盖]*\n\n机器: {user_label(user)}\n动作: 已恢复按定时计划自动巡检", parse_mode="Markdown")
 
 
 def pending_key(chat_id):
@@ -565,6 +595,8 @@ def handle_command(config, chat_id, text, state=None):
         set_schedule(config, chat_id, parts[1], parts[2], parts[3])
     elif command in ("/unschedule", "/delschedule") and len(parts) >= 2:
         clear_schedule(config, chat_id, parts[1])
+    elif command == "/clearoverride" and len(parts) >= 2:
+        clear_manual_override(config, chat_id, parts[1])
     else:
         send_message(config, chat_id, HELP_TEXT)
 
@@ -607,6 +639,12 @@ def handle_callback(config, callback, state):
         all_users = users(config)
         if 0 <= idx < len(all_users):
             toggle_pause(config, chat_id, str(idx + 1))
+            submit_task(config, chat_id, show_instance, load_config(), chat_id, idx, message_id)
+    elif data.startswith("clear_override:"):
+        idx = int(data.split(":", 1)[1])
+        all_users = users(config)
+        if 0 <= idx < len(all_users):
+            clear_manual_override(config, chat_id, str(idx + 1))
             submit_task(config, chat_id, show_instance, load_config(), chat_id, idx, message_id)
 
 
