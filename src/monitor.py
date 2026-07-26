@@ -53,6 +53,8 @@ MAX_START_FAILURES = 3
 RESOURCE_RETRY_COOLDOWN = 1800
 # DDNS 同域名换班保护最长暂缓时间（秒）
 DDNS_HANDOFF_GRACE_SECONDS = 900
+# 新当班实例 DDNS 就绪后，旧实例延迟节省停机时间（秒），等待 DNS 缓存过期
+DDNS_HANDOFF_LINGER_SECONDS = 300
 
 # 初始化日志
 logger = logging.getLogger(__name__)
@@ -301,7 +303,19 @@ def handoff_grace_remaining(state, instance_id):
     return max(0, int(DDNS_HANDOFF_GRACE_SECONDS - elapsed))
 
 def clear_handoff_grace(state, instance_id):
-    state.setdefault(instance_id, {}).pop('ddns_handoff_since', None)
+    item = state.setdefault(instance_id, {})
+    item.pop('ddns_handoff_since', None)
+    item.pop('ddns_linger_since', None)
+
+def handoff_linger_remaining(state, instance_id):
+    item = state.setdefault(instance_id, {})
+    start_ts = item.get('ddns_linger_since')
+    now = time.time()
+    if not start_ts:
+        item['ddns_linger_since'] = now
+        return DDNS_HANDOFF_LINGER_SECONDS
+    elapsed = now - float(start_ts)
+    return max(0, int(DDNS_HANDOFF_LINGER_SECONDS - elapsed))
 
 def stop_for_schedule(client, user, tg_conf, state, result):
     instance_id = user['instance_id']
@@ -583,8 +597,15 @@ def main():
     for user in inactive_users:
         record_key = ddns_record_key(user)
         allow_schedule_stop = True
-        if record_key and record_key in active_record_keys and record_key not in ready_record_keys:
-            allow_schedule_stop = False
+        if record_key and record_key in active_record_keys:
+            if record_key not in ready_record_keys:
+                allow_schedule_stop = False
+            else:
+                remaining = handoff_linger_remaining(state, user['instance_id'])
+                if remaining > 0:
+                    allow_schedule_stop = False
+                    name = user.get('name', user['instance_id'])
+                    logger.info(f"[{name}] 新当班实例已就绪，延迟节省停机等待 DNS 缓存过期，剩余 {remaining}s")
         check_and_act(user, tg_conf, state, allow_schedule_stop=allow_schedule_stop)
     save_state(state)
 
