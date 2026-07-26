@@ -132,7 +132,7 @@ def build_user_report(user):
         'BillingCycle': datetime.datetime.now().strftime("%Y-%m"),
         'InstanceID': target_id
     }
-    bill_data = do_common_request(bill_client, bill_endpoint, '2017-12-14', 'DescribeInstanceBill', bill_params, retries=1)
+    bill_data = do_common_request(bill_client, bill_endpoint, '2017-12-14', 'DescribeInstanceBill', bill_params, retries=3)
     if bill_data and bill_data.get('Success'):
         items = bill_data.get('Data', {}).get('Items', [])
         if items:
@@ -141,7 +141,7 @@ def build_user_report(user):
 
     if bill_amount == -1:
         bill_params2 = {'BillingCycle': datetime.datetime.now().strftime("%Y-%m")}
-        bill_data2 = do_common_request(bill_client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
+        bill_data2 = do_common_request(bill_client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2, retries=3)
         if bill_data2:
             items2 = bill_data2.get('Data', {}).get('Items', {}).get('Item', [])
             bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items2)

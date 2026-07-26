@@ -187,7 +187,7 @@ def get_current_bill_info(user):
         '2017-12-14',
         'DescribeInstanceBill',
         {'BillingCycle': billing_cycle, 'InstanceID': instance_id},
-        retries=1,
+        retries=3,
     )
     if bill_data and bill_data.get('Success'):
         items = bill_data.get('Data', {}).get('Items', [])
@@ -201,7 +201,7 @@ def get_current_bill_info(user):
         '2017-12-14',
         'QueryBillOverview',
         {'BillingCycle': billing_cycle},
-        retries=1,
+        retries=3,
     )
     if bill_data:
         items = bill_data.get('Data', {}).get('Items', {}).get('Item', [])
