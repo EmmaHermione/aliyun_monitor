@@ -436,9 +436,10 @@ function run_manage_menu() {
         echo "7) 更新脚本并重启服务 (Update)"
         echo "8) 重新初始化配置 (Reset Config)"
         echo "9) 卸载并清理脚本 (Uninstall)"
+        echo "10) 查看运行日志 (Logs)"
         echo "0) 退出 (Exit)"
         echo -e "${GREEN}=====================================${NC}"
-        read -p "请输入序号 (0-9): " MENU_OPT
+        read -p "请输入序号 (0-10): " MENU_OPT
 
         case $MENU_OPT in
             1)
@@ -768,6 +769,28 @@ except Exception:
                 else
                     echo -e "${RED}卸载脚本下载失败，请检查网络后重试。${NC}"
                     rm -f "$TMP_UNINSTALL"
+                fi
+                ;;
+            10)
+                echo -e "\n${BLUE}日志文件：${NC}"
+                echo "1) monitor.log (巡检日志)"
+                echo "2) bot.log (Telegram Bot 日志)"
+                echo "3) report.log (日报日志)"
+                read -p "请选择日志 (1-3, 输入 q 取消): " LOG_OPT
+                case $LOG_OPT in
+                    1) LOG_PATH="${TARGET_DIR}/monitor.log" ;;
+                    2) LOG_PATH="${TARGET_DIR}/bot.log" ;;
+                    3) LOG_PATH="${TARGET_DIR}/report.log" ;;
+                    *) LOG_PATH="" ;;
+                esac
+                if [ -n "$LOG_PATH" ]; then
+                    if [ -f "$LOG_PATH" ]; then
+                        read -p "显示最近行数 (默认 50): " LOG_LINES
+                        echo -e "${GREEN}===== ${LOG_PATH} 最近 ${LOG_LINES:-50} 行 =====${NC}"
+                        tail -n "${LOG_LINES:-50}" "$LOG_PATH"
+                    else
+                        echo -e "${RED}日志文件不存在: $LOG_PATH${NC}"
+                    fi
                 fi
                 ;;
             0)
