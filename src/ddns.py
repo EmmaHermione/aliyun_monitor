@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import time
 
 import requests
@@ -86,7 +86,7 @@ def sync_ddns(user, public_ip, logger=None):
     try:
         record = _find_cf_record(zone_id, record_type, record_name, headers, logger=logger)
         if record and record.get("content") == public_ip and bool(record.get("proxied", False)) == proxied:
-            return _result(True, f"DDNS: {record_name} 已是最新 -> {public_ip}", False, record_name, public_ip)
+            return _result(True, f"DDNS: {record_name} -> {public_ip} (已是最新)", False, record_name, public_ip)
 
         payload = {
             "type": record_type,
@@ -116,7 +116,7 @@ def sync_ddns(user, public_ip, logger=None):
         if not resp.ok or not data.get("success"):
             err = _cf_error(data, resp.status_code)
             return _result(False, f"DDNS: {record_name} 同步失败，{err}", True, record_name, public_ip)
-        return _result(True, f"DDNS: {record_name} -> {public_ip} {action}", True, record_name, public_ip)
+        return _result(True, f"DDNS: {record_name} -> {public_ip} ({action})", True, record_name, public_ip)
     except Exception as exc:
         if logger:
             logger.warning("[%s] DDNS 同步异常: %s", user.get("name", user.get("instance_id")), exc)

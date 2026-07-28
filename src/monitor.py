@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import json
 import sys
 import logging
@@ -378,7 +378,7 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
                         result["status"] = "Stopping"
                         clear_handoff_grace(state, instance_id)
                         if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                            msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发止损节省停机 \U0001f6d1"
+                            msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发流量止损节省停机"
                             send_tg_alert(tg_conf, "流量预警", msg, "red")
                             mark_notified(state, instance_id, 'overlimit')
                         return result
@@ -411,13 +411,13 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
                 stop_instance_in_saving_mode(client, instance_id)
                 result["status"] = "Stopping"
                 if can_notify(state, instance_id, 'bill_overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n动作: 已触发账单止损节省停机 \U0001f6d1"
+                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n动作: 已触发账单止损节省停机"
                     send_tg_alert(tg_conf, "账单预警", msg, "red")
                     mark_notified(state, instance_id, 'bill_overlimit')
             else:
                 logger.info(f"[{name}] 账单超标({bill_text} >= {bill_limit_text})，保持节省停机")
                 if can_notify(state, instance_id, 'bill_overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n状态: 账单超标，已保持节省停机 \U0001f6d1"
+                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n状态: 账单超标，已保持节省停机"
                     send_tg_alert(tg_conf, "账单超标提醒", msg, "red")
                     mark_notified(state, instance_id, 'bill_overlimit')
             return result
@@ -559,14 +559,14 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
                 stop_instance_in_saving_mode(client, instance_id)
                 result["status"] = "Stopping"
                 if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发止损节省停机 \U0001f6d1"
+                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发流量止损节省停机"
                     send_tg_alert(tg_conf, "流量预警", msg, "red")
                     mark_notified(state, instance_id, 'overlimit')
             else:
                 # 已处于停止状态，每天提醒一次
                 logger.info(f"[{name}] 已停止止损 - {curr_gb:.2f}GB")
                 if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n状态: 流量超标，已保持节省停机 \U0001f6d1"
+                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n状态: 流量超标，已保持节省停机"
                     send_tg_alert(tg_conf, "流量超标提醒", msg, "red")
                     mark_notified(state, instance_id, 'overlimit')
 
