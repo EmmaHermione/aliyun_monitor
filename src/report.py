@@ -27,6 +27,15 @@ socket.getaddrinfo = _getaddrinfo_ipv4_only
 
 warnings.filterwarnings("ignore")
 
+LOG_FILE = "/opt/scripts/report.log"
+from logging.handlers import RotatingFileHandler
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    report_handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=3, encoding='utf-8')
+    report_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(report_handler)
+
 try:
     from aliyunsdkcore.client import AcsClient
     from aliyunsdkcore.request import CommonRequest

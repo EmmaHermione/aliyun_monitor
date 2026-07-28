@@ -39,11 +39,13 @@ CONFIG_FILE = "/opt/scripts/config.json"
 STATE_FILE = "/opt/scripts/bot_state.json"
 LOG_FILE = "/opt/scripts/bot.log"
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+from logging.handlers import RotatingFileHandler
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+if not root_logger.handlers:
+    handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=3, encoding='utf-8')
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    root_logger.addHandler(handler)
 
 TASK_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 ACTIVE_TASKS = 0

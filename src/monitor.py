@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import json
 import sys
 import logging
@@ -6,7 +6,7 @@ import os
 import time
 import datetime
 import requests
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 from aliyunsdkcore.client import AcsClient
 from aliyunsdkcore.request import CommonRequest
 from aliyunsdkecs.request.v20140526.StartInstanceRequest import StartInstanceRequest
@@ -54,13 +54,13 @@ RESOURCE_RETRY_COOLDOWN = 1800
 # DDNS 同域名换班保护最长暂缓时间（秒）
 DDNS_HANDOFF_GRACE_SECONDS = 900
 # 新当班实例 DDNS 就绪后，旧实例延迟节省停机时间（秒），等待 DNS 缓存过期
-DDNS_HANDOFF_LINGER_SECONDS = 300
+DDNS_HANDOFF_LINGER_SECONDS = 240
 
 # 初始化日志
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    handler = TimedRotatingFileHandler(LOG_FILE, when='D', interval=1, backupCount=7, encoding='utf-8')
+    handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=3, encoding='utf-8')
     handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
     logger.addHandler(handler)
 

@@ -173,8 +173,6 @@ WorkingDirectory=${TARGET_DIR}
 ExecStart=${VENV_DIR}/bin/python -u ${TARGET_DIR}/bot.py
 Restart=always
 RestartSec=5
-StandardOutput=append:${TARGET_DIR}/bot.log
-StandardError=append:${TARGET_DIR}/bot.log
 
 [Install]
 WantedBy=multi-user.target
@@ -192,11 +190,11 @@ EOF
     else
         crontab -l > /tmp/cron_bk 2>/dev/null
         grep -v "aliyun_monitor_bot" /tmp/cron_bk > /tmp/cron_clean
-        echo "@reboot nohup ${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py >> ${TARGET_DIR}/bot.log 2>&1 #aliyun_monitor_bot" >> /tmp/cron_clean
+        echo "@reboot nohup ${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py >/dev/null 2>&1 #aliyun_monitor_bot" >> /tmp/cron_clean
         crontab /tmp/cron_clean
         rm -f /tmp/cron_bk /tmp/cron_clean
         pkill -f "${TARGET_DIR}/bot.py" 2>/dev/null || true
-        nohup "${VENV_DIR}/bin/python" "${TARGET_DIR}/bot.py" >> "${TARGET_DIR}/bot.log" 2>&1 &
+        nohup "${VENV_DIR}/bin/python" "${TARGET_DIR}/bot.py" >/dev/null 2>&1 &
         echo -e "${GREEN}✓ Telegram 机器人已启动，并写入 @reboot 自启任务${NC}"
     fi
 }
@@ -386,8 +384,8 @@ EOF
     echo -e "${YELLOW}>> 配置定时任务...${NC}"
     crontab -l > /tmp/cron_bk 2>/dev/null
     grep -v "aliyun_monitor" /tmp/cron_bk > /tmp/cron_clean
-    echo "*/5 * * * * ${VENV_DIR}/bin/python ${TARGET_DIR}/monitor.py >> ${TARGET_DIR}/monitor.log 2>&1 #aliyun_monitor" >> /tmp/cron_clean
-    echo "0 9 * * * ${VENV_DIR}/bin/python ${TARGET_DIR}/report.py >> ${TARGET_DIR}/report.log 2>&1 #aliyun_monitor" >> /tmp/cron_clean
+    echo "*/5 * * * * ${VENV_DIR}/bin/python ${TARGET_DIR}/monitor.py >/dev/null 2>&1 #aliyun_monitor" >> /tmp/cron_clean
+    echo "0 9 * * * ${VENV_DIR}/bin/python ${TARGET_DIR}/report.py >/dev/null 2>&1 #aliyun_monitor" >> /tmp/cron_clean
     crontab /tmp/cron_clean
     rm /tmp/cron_bk /tmp/cron_clean
 
