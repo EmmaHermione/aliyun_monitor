@@ -16,7 +16,7 @@ from aliyunsdkecs.request.v20140526.RebootInstanceRequest import RebootInstanceR
 from aliyunsdkecs.request.v20140526.StartInstanceRequest import StartInstanceRequest
 from aliyunsdkecs.request.v20140526.StopInstanceRequest import StopInstanceRequest
 
-from ddns import ddns_desc, instance_public_ip, is_ddns_enabled, sync_ddns
+from ddns import ddns_desc, instance_public_ip, is_ddns_enabled, sync_ddns, sync_ddns_if_needed
 
 try:
     from aliyunsdkcore.vendored.requests.packages.urllib3.util import ssl_
@@ -37,6 +37,7 @@ socket.getaddrinfo = _getaddrinfo_ipv4_only
 
 CONFIG_FILE = "/opt/scripts/config.json"
 STATE_FILE = "/opt/scripts/bot_state.json"
+MONITOR_STATE_FILE = "/opt/scripts/monitor_state.json"
 LOG_FILE = "/opt/scripts/bot.log"
 
 from logging.handlers import RotatingFileHandler
@@ -117,6 +118,14 @@ def load_state():
 
 def save_state(state):
     save_json(STATE_FILE, state)
+
+
+def load_monitor_state():
+    return load_json(MONITOR_STATE_FILE, {})
+
+
+def save_monitor_state(state):
+    save_json(MONITOR_STATE_FILE, state)
 
 
 def tg_conf(config):
@@ -443,21 +452,39 @@ def run_action(config, chat_id, action, index):
             status, inst = wait_until_running(user)
             if status == "Running":
                 public_ip = instance_public_ip(inst)
-                ddns_result = sync_ddns(user, public_ip) if is_ddns_enabled(user) else None
+                ddns_result = None
+                if is_ddns_enabled(user):
+                    mon_state = load_monitor_state()
+
+                    def _is_running(u):
+                        st, _ = get_status(u)
+                        return st == "Running"
+
+                    ddns_result = sync_ddns_if_needed(
+                        user,
+                        mon_state,
+                        user["instance_id"],
+                        public_ip,
+                        force=True,
+                        logger=root_logger,
+                        config=config,
+                        check_running_fn=_is_running,
+                    )
+                    save_monitor_state(mon_state)
                 ddns_line = f"\n{ddns_result['message']}" if ddns_result else ""
-                send_message(config, chat_id, f"🟢 已开机: {name}\n状态: {status}\n手动覆盖: 保持运行\n公网 IP: {public_ip or '无公网IP'}{ddns_line}")
+                send_message(config, chat_id, f"已开机: {name}\n状态: {status}\n手动覆盖: 保持运行\n公网 IP: {public_ip or '无公网IP'}{ddns_line}")
             else:
-                send_message(config, chat_id, f"🟢 已发送开机指令: {name}\n当前状态: {status}\n手动覆盖: 保持运行")
+                send_message(config, chat_id, f"已发送开机指令: {name}\n当前状态: {status}\n手动覆盖: 保持运行")
         elif action == "stop":
             user["manual_override"] = "stop"
             save_config(config)
             stop_instance(user)
-            send_message(config, chat_id, f"🔴 已发送节省停机指令: {name}\n手动覆盖: 保持停机")
+            send_message(config, chat_id, f"已发送节省停机指令: {name}\n手动覆盖: 保持停机")
         elif action == "reboot":
             user["manual_override"] = "run"
             save_config(config)
             reboot_instance(user)
-            send_message(config, chat_id, f"🔁 已发送重启指令: {name}\n手动覆盖: 保持运行")
+            send_message(config, chat_id, f"已发送重启指令: {name}\n手动覆盖: 保持运行")
         elif action == "status":
             from report import build_user_report
             send_message(config, chat_id, build_user_report(user), parse_mode="Markdown")

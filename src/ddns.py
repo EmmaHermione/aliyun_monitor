@@ -1,4 +1,5 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
+import datetime
 import time
 
 import requests
@@ -6,6 +7,39 @@ import requests
 
 DDNS_SYNC_INTERVAL = 3600
 CF_API_BASE = "https://api.cloudflare.com/client/v4"
+
+
+def parse_hhmm(value):
+    try:
+        hour, minute = str(value).strip().split(":", 1)
+        hour = int(hour)
+        minute = int(minute)
+        if hour == 24 and minute == 0:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour * 60 + minute
+    except Exception:
+        pass
+    return None
+
+
+def is_in_schedule_window(user, now=None):
+    if not user.get("schedule_enabled"):
+        return True
+
+    start_min = parse_hhmm(user.get("schedule_start", "00:00"))
+    end_min = parse_hhmm(user.get("schedule_end", "23:59"))
+    if start_min is None or end_min is None:
+        return True
+    if start_min == end_min:
+        return True
+
+    now = now or datetime.datetime.now()
+    current_min = now.hour * 60 + now.minute
+
+    if start_min < end_min:
+        return start_min <= current_min < end_min
+    return current_min >= start_min or current_min < end_min
 
 
 def is_ddns_enabled(user):
@@ -39,28 +73,104 @@ def ddns_record_key(user):
     return f"{provider}:{zone_id}:{record_type}:{record_name}"
 
 
+def get_active_on_duty_conflict(user, config, check_running_fn=None):
+    """
+    检查同域名下是否存在其他正处于定时计划内且运行中的当班实例。
+    如果当前实例本身就在计划时段内，则不产生当班保护冲突。
+    """
+    if is_in_schedule_window(user):
+        return None
+
+    record_key = ddns_record_key(user)
+    if not record_key or not config:
+        return None
+
+    current_id = user.get("instance_id")
+    for other in config.get("users", []):
+        other_id = other.get("instance_id")
+        if other_id == current_id:
+            continue
+        if other.get("paused") or other.get("disabled"):
+            continue
+        if ddns_record_key(other) != record_key:
+            continue
+        if not is_in_schedule_window(other):
+            continue
+
+        # other 在计划时段内，检查其是否处于运行状态
+        if check_running_fn:
+            try:
+                is_running = check_running_fn(other)
+            except Exception:
+                is_running = False
+            if is_running:
+                return other
+        else:
+            return other
+
+    return None
+
+
 def should_sync_ddns(user, state, instance_id, public_ip, force=False):
-    if force:
-        return True
     if not public_ip:
         return False
+    if force:
+        return True
+
+    # 1. 检查全局 DDNS 域名所有权与当前解析 IP
+    record_key = ddns_record_key(user)
+    if record_key and state:
+        ddns_records = state.setdefault("ddns_records", {})
+        current_record = ddns_records.get(record_key)
+        if current_record:
+            # 如果全局记录的所有者不是自己，或记录的 IP 不是当前公网 IP，说明域名被覆盖或未对齐，需要同步
+            if current_record.get("owner") != instance_id or current_record.get("ip") != public_ip:
+                return True
+
+    # 2. 检查实例本地缓存与同步间隔
     item = state.setdefault(instance_id, {})
     last_ip = item.get("last_ddns_ip")
     last_ts = float(item.get("last_ddns_sync_ts", 0) or 0)
     return public_ip != last_ip or time.time() - last_ts >= DDNS_SYNC_INTERVAL
 
 
-def sync_ddns_if_needed(user, state, instance_id, public_ip, force=False, logger=None):
+def sync_ddns_if_needed(user, state, instance_id, public_ip, force=False, logger=None, config=None, check_running_fn=None):
     if not is_ddns_enabled(user):
         return None
+    if not public_ip:
+        return None
+
+    # 检查是否有正在当班运行的其他实例使用同一域名
+    if config:
+        conflict_user = get_active_on_duty_conflict(user, config, check_running_fn=check_running_fn)
+        if conflict_user:
+            conflict_name = conflict_user.get("name") or conflict_user.get("instance_id")
+            record_name = user.get("ddns_record_name", "")
+            msg = f"DDNS: 已跳过 (当班实例 [{conflict_name}] 正在使用该域名)"
+            if logger:
+                logger.info("[%s] %s", user.get("name", instance_id), msg)
+            return _result(True, msg, changed=False, record_name=record_name, ip=public_ip)
+
     if not should_sync_ddns(user, state, instance_id, public_ip, force=force):
         return None
+
     result = sync_ddns(user, public_ip, logger=logger)
     if result.get("ok"):
+        record_key = ddns_record_key(user)
         item = state.setdefault(instance_id, {})
         item["last_ddns_ip"] = public_ip
         item["last_ddns_sync_ts"] = time.time()
         item["last_ddns_record"] = result.get("record_name", "")
+
+        # 记录全局 DDNS 域名所有权
+        if record_key:
+            state.setdefault("ddns_records", {})[record_key] = {
+                "owner": instance_id,
+                "name": user.get("name", instance_id),
+                "ip": public_ip,
+                "sync_ts": time.time(),
+                "record_name": result.get("record_name", ""),
+            }
     return result
 
 

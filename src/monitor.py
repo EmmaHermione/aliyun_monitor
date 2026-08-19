@@ -13,7 +13,13 @@ from aliyunsdkecs.request.v20140526.StartInstanceRequest import StartInstanceReq
 from aliyunsdkecs.request.v20140526.StopInstanceRequest import StopInstanceRequest
 from aliyunsdkecs.request.v20140526.DescribeInstancesRequest import DescribeInstancesRequest
 
-from ddns import ddns_record_key, instance_public_ip, sync_ddns_if_needed
+from ddns import (
+    ddns_record_key,
+    instance_public_ip,
+    is_in_schedule_window,
+    parse_hhmm,
+    sync_ddns_if_needed,
+)
 
 # 修正 urllib3 在 Python 3.12 下引发的 SNI 丢失问题
 try:
@@ -249,37 +255,6 @@ def stop_instance_in_saving_mode(client, instance_id):
     stop_req.set_StoppedMode("StopCharging")
     client.do_action_with_exception(stop_req)
 
-def parse_hhmm(value):
-    try:
-        hour, minute = str(value).strip().split(':', 1)
-        hour = int(hour)
-        minute = int(minute)
-        if hour == 24 and minute == 0:
-            hour = 0
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return hour * 60 + minute
-    except Exception:
-        pass
-    return None
-
-def is_in_schedule_window(user, now=None):
-    if not user.get('schedule_enabled'):
-        return True
-
-    start_min = parse_hhmm(user.get('schedule_start', '00:00'))
-    end_min = parse_hhmm(user.get('schedule_end', '23:59'))
-    if start_min is None or end_min is None:
-        return True
-    if start_min == end_min:
-        return True
-
-    now = now or datetime.datetime.now()
-    current_min = now.hour * 60 + now.minute
-
-    if start_min < end_min:
-        return start_min <= current_min < end_min
-    return current_min >= start_min or current_min < end_min
-
 def schedule_desc(user):
     if not user.get('schedule_enabled'):
         return '全天运行'
@@ -334,7 +309,7 @@ def stop_for_schedule(client, user, tg_conf, state, result):
         send_tg_alert(tg_conf, "定时计划", msg, "green")
         mark_notified(state, instance_id, 'schedule_stopped')
 
-def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
+def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
     instance_id = user['instance_id']
     name        = user.get('name', instance_id)
     in_window = is_in_schedule_window(user)
@@ -504,7 +479,7 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
                     except Exception:
                         instance = None
                     public_ip = instance_public_ip(instance)
-                    ddns_result = sync_ddns_if_needed(user, state, instance_id, public_ip, force=True, logger=logger)
+                    ddns_result = sync_ddns_if_needed(user, state, instance_id, public_ip, force=True, logger=logger, config=config)
                     ddns_line = f"\n{ddns_result['message']}" if ddns_result else ""
                     result["status"] = "Running"
                     result["public_ip"] = public_ip
@@ -542,7 +517,7 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True):
                 # 正常运行，重置计数
                 reset_start_failures(state, instance_id)
                 public_ip = instance_public_ip(instance)
-                ddns_result = sync_ddns_if_needed(user, state, instance_id, public_ip, logger=logger)
+                ddns_result = sync_ddns_if_needed(user, state, instance_id, public_ip, logger=logger, config=config)
                 if ddns_result:
                     logger.info(f"[{name}] {ddns_result['message']}")
                 result["public_ip"] = public_ip
@@ -585,7 +560,7 @@ def main():
 
     active_results = []
     for user in active_users:
-        active_results.append(check_and_act(user, tg_conf, state))
+        active_results.append(check_and_act(user, tg_conf, state, config=config))
 
     active_record_keys = {ddns_record_key(u) for u in active_handoff_users if ddns_record_key(u)}
     ready_record_keys = {
@@ -606,7 +581,7 @@ def main():
                     allow_schedule_stop = False
                     name = user.get('name', user['instance_id'])
                     logger.info(f"[{name}] 新当班实例已就绪，延迟节省停机等待 DNS 缓存过期，剩余 {remaining}s")
-        check_and_act(user, tg_conf, state, allow_schedule_stop=allow_schedule_stop)
+        check_and_act(user, tg_conf, state, allow_schedule_stop=allow_schedule_stop, config=config)
     save_state(state)
 
 if __name__ == "__main__":
