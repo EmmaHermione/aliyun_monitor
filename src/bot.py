@@ -376,6 +376,22 @@ def instance_keyboard(index):
     }
 
 
+BOT_COMMANDS = [
+    {"command": "menu", "description": "打开实例管理菜单"},
+    {"command": "list", "description": "查看实例列表"},
+    {"command": "report", "description": "获取当前日报内容"},
+    {"command": "help", "description": "查看帮助说明"},
+]
+
+
+def setup_bot_commands(config):
+    res = tg_request(config, "setMyCommands", {"commands": BOT_COMMANDS})
+    if res.get("ok"):
+        logging.info("Telegram Bot 命令面板注册成功")
+    else:
+        logging.warning("Telegram Bot 命令面板注册失败: %s", res)
+
+
 HELP_TEXT = """可用命令:
 /menu - 打开实例管理菜单
 /list - 查看实例列表
@@ -713,12 +729,16 @@ def poll_once(config, state):
 
 def main():
     logging.info("Telegram Bot 服务启动")
+    commands_registered = False
     while True:
         config = load_config()
         if not tg_conf(config).get("bot_token") or not tg_conf(config).get("chat_id"):
             logging.error("Telegram 配置缺失，10 秒后重试")
             time.sleep(10)
             continue
+        if not commands_registered:
+            setup_bot_commands(config)
+            commands_registered = True
         state = load_state()
         try:
             poll_once(config, state)

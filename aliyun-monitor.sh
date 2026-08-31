@@ -409,11 +409,14 @@ if not users:
 else:
     for i, u in enumerate(users):
         paused = '已暂停' if u.get('paused') or u.get('disabled') else '运行中'
+        override = u.get('manual_override')
+        override_str = f' [覆盖:{override}]' if override else ''
         enabled = bool(u.get('schedule_enabled'))
         start = u.get('schedule_start', '00:00')
         end = u.get('schedule_end', '23:59')
         schedule = f'{start}-{end}' if enabled else '全天运行'
         ddns = u.get('ddns_record_name') if u.get('ddns_enabled') else '未启用'
+        print(f' [{i}] 备注名: {u.get("name")} | 实例ID: {u.get("instance_id")} | 区域: {u.get("region")} | 状态: {paused}{override_str} | 计划: {schedule} | DDNS: {ddns}')
         print(f' [{i}] 备注名: {u.get(\"name\")} | 实例ID: {u.get(\"instance_id\")} | 区域: {u.get(\"region\")} | 状态: {paused} | 计划: {schedule} | DDNS: {ddns}')
 "
 }
@@ -427,7 +430,7 @@ function run_manage_menu() {
         echo "2) 添加实例 (Add)"
         echo "3) 修改实例配置/DDNS (Edit)"
         echo "4) 修改运行窗口 (Schedule)"
-        echo "5) 暂停/恢复监控 (Pause/Resume)"
+        echo "5) 暂停/恢复/清除覆盖 (Pause/Resume/Clear Override)"
         echo "6) 删除实例 (Delete)"
         echo ""
         echo "系统维护："
@@ -500,15 +503,17 @@ if not users:
     print('当前没有配置任何监控实例。')
 else:
     for i, u in enumerate(users):
-        paused = '已暂停' if u.get('paused') or u.get('disabled') else '运行中'
+        paused = '已暂停' if u.get('paused') or u.get('disabled') else '监控中'
+        override = u.get('manual_override')
+        override_str = f' [手动覆盖:保持{"运行" if override == "run" else "停机" if override == "stop" else override}]' if override else ''
         enabled = bool(u.get('schedule_enabled'))
         start = u.get('schedule_start', '00:00')
         end = u.get('schedule_end', '23:59')
         schedule = f'{start}-{end}' if enabled else '全天运行'
-        print(f' [{i}] 备注名: {u.get(\"name\")} | 实例ID: {u.get(\"instance_id\")} | 状态: {paused} | 计划: {schedule}')
+        print(f' [{i}] 备注名: {u.get("name")} | 实例ID: {u.get("instance_id")} | 状态: {paused}{override_str} | 计划: {schedule}')
 "
                 echo ""
-                read -p "请输入要切换暂停/恢复的实例序号 (输入 q 取消): " TOGGLE_IDX
+                read -p "请输入要操作的实例序号 (输入 q 取消): " TOGGLE_IDX
                 if [[ "$TOGGLE_IDX" == "q" || -z "$TOGGLE_IDX" ]]; then
                     continue
                 fi
@@ -519,14 +524,26 @@ with open('$CONFIG_FILE', 'r') as f:
     data = json.load(f)
 try:
     user = data['users'][idx]
-    paused = bool(user.get('paused') or user.get('disabled'))
-    user['paused'] = not paused
-    user.pop('disabled', None)
+    is_paused = bool(user.get('paused') or user.get('disabled'))
+    override = user.get('manual_override')
+    
+    if is_paused:
+        user['paused'] = False
+        user.pop('disabled', None)
+        user.pop('manual_override', None)
+        state_msg = '已恢复监控 (已同步清除手动覆盖，交由定时计划接管)'
+    elif override:
+        user.pop('manual_override', None)
+        state_msg = '已清除手动覆盖 (保持监控中，已重置为按定时计划自动巡检)'
+    else:
+        user['paused'] = True
+        user.pop('disabled', None)
+        state_msg = '已暂停监控'
+    
     with open('$CONFIG_FILE', 'w') as f:
-        json.dump(data, f, indent=4)
-    state = '已暂停' if user['paused'] else '已恢复'
-    print(f'\n\033[0;32m✅ 成功切换实例: {user.get(\"name\")} ({user.get(\"instance_id\")}) -> {state}\033[0m')
-except Exception:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    print(f'\n\033[0;32m✅ 实例: {user.get("name")} ({user.get("instance_id")}) -> {state_msg}\033[0m')
+except Exception as e:
     print(f'\n\033[0;31m❌ 操作失败: 无效的序号 {idx}\033[0m')
 "
                 ;;
