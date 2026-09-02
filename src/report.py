@@ -44,10 +44,7 @@ except ImportError:
 
 CONFIG_FILE = '/opt/scripts/config.json'
 
-def billing_api_region(user):
-    bill_endpoint = user.get('bill_endpoint', '')
-    if 'ap-southeast-1' in bill_endpoint:
-        return 'ap-southeast-1'
+def billing_api_region(user=None):
     return 'cn-hangzhou'
 
 def load_config():

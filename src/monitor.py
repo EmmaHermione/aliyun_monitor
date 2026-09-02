@@ -152,10 +152,7 @@ def get_current_traffic_gb(user):
     total_bytes = sum(d.get('Traffic', 0) for d in data_traffic.get('TrafficDetails', []))
     return total_bytes / (1024 ** 3)
 
-def billing_api_region(user):
-    bill_endpoint = user.get('bill_endpoint', '')
-    if 'ap-southeast-1' in bill_endpoint:
-        return 'ap-southeast-1'
+def billing_api_region(user=None):
     return 'cn-hangzhou'
 
 def do_common_request(client, domain, version, action, params=None, method='POST', retries=1):
