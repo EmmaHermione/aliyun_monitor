@@ -201,6 +201,7 @@ EOF
 
 function install_or_restart_bot() {
     echo -e "${YELLOW}>> 更新并重启 Telegram 机器人...${NC}"
+    install_script_file "common.py" || return 1
     install_script_file "ddns.py" || return 1
     install_script_file "bot.py" || return 1
     install_script_file "report.py" || return 1
@@ -209,6 +210,7 @@ function install_or_restart_bot() {
 
 function update_scripts_keep_config() {
     echo -e "${YELLOW}>> 更新脚本文件，保留现有配置...${NC}"
+    download_script_file "common.py" || return 1
     download_script_file "monitor.py" || return 1
     download_script_file "report.py" || return 1
     download_script_file "bot.py" || return 1
@@ -296,7 +298,7 @@ function get_single_user_json() {
     fi
 
     # 将构建好的 JSON 字符串赋值给全局变量 (去除了 resgroup，加入了 bill_endpoint 和 currency)
-    CURRENT_USER_JSON="{\"name\": \"$NAME\", \"ak\": \"$AK\", \"sk\": \"$SK\", \"region\": \"$REGION\", \"instance_id\": \"$INSTANCE\", \"traffic_limit\": $LIMIT, \"quota\": 200, \"bill_threshold\": $BILL_THRESHOLD, \"bill_endpoint\": \"$BILL_ENDPOINT\", \"currency\": \"$CURRENCY\", \"paused\": false, \"schedule_enabled\": $SCHEDULE_ENABLED, \"schedule_start\": \"$SCHEDULE_START\", \"schedule_end\": \"$SCHEDULE_END\", \"ddns_enabled\": $DDNS_ENABLED, \"ddns_provider\": \"cloudflare\", \"ddns_token\": \"$DDNS_TOKEN\", \"ddns_zone_id\": \"$DDNS_ZONE_ID\", \"ddns_record_name\": \"$DDNS_RECORD_NAME\", \"ddns_record_type\": \"$DDNS_RECORD_TYPE\"}"
+    CURRENT_USER_JSON="{\"name\": \"$NAME\", \"ak\": \"$AK\", \"sk\": \"$SK\", \"region\": \"$REGION\", \"instance_id\": \"$INSTANCE\", \"traffic_limit\": $LIMIT, \"bill_threshold\": $BILL_THRESHOLD, \"bill_endpoint\": \"$BILL_ENDPOINT\", \"currency\": \"$CURRENCY\", \"paused\": false, \"schedule_enabled\": $SCHEDULE_ENABLED, \"schedule_start\": \"$SCHEDULE_START\", \"schedule_end\": \"$SCHEDULE_END\", \"ddns_enabled\": $DDNS_ENABLED, \"ddns_provider\": \"cloudflare\", \"ddns_token\": \"$DDNS_TOKEN\", \"ddns_zone_id\": \"$DDNS_ZONE_ID\", \"ddns_record_name\": \"$DDNS_RECORD_NAME\", \"ddns_record_type\": \"$DDNS_RECORD_TYPE\"}"
 }
 
 # 完整安装流程 (首次运行)
@@ -327,6 +329,7 @@ function run_full_install() {
 
     # 4. 获取源码：首次安装/重新初始化时从 GitHub 拉取最新脚本
     echo -e "${YELLOW}>> 获取监控脚本...${NC}"
+    download_script_file "common.py" || exit 1
     download_script_file "monitor.py" || exit 1
     download_script_file "report.py" || exit 1
     download_script_file "bot.py" || exit 1

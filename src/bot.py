@@ -3,8 +3,6 @@ import datetime
 import json
 import logging
 import os
-import socket
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,28 +14,18 @@ from aliyunsdkecs.request.v20140526.RebootInstanceRequest import RebootInstanceR
 from aliyunsdkecs.request.v20140526.StartInstanceRequest import StartInstanceRequest
 from aliyunsdkecs.request.v20140526.StopInstanceRequest import StopInstanceRequest
 
+from common import (
+    BOT_STATE_FILE,
+    CONFIG_FILE,
+    MONITOR_STATE_FILE,
+    load_config,
+    load_json,
+    save_config,
+    save_json,
+)
 from ddns import ddns_desc, instance_public_ip, is_ddns_enabled, sync_ddns, sync_ddns_if_needed
 
-try:
-    from aliyunsdkcore.vendored.requests.packages.urllib3.util import ssl_
-    ssl_.HAS_SNI = True
-except Exception:
-    pass
-
-_orig_getaddrinfo = socket.getaddrinfo
-
-
-def _getaddrinfo_ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
-    res = _orig_getaddrinfo(host, port, family, type, proto, flags)
-    ipv4_res = [r for r in res if r[0] == socket.AF_INET]
-    return ipv4_res if ipv4_res else res
-
-
-socket.getaddrinfo = _getaddrinfo_ipv4_only
-
-CONFIG_FILE = "/opt/scripts/config.json"
-STATE_FILE = "/opt/scripts/bot_state.json"
-MONITOR_STATE_FILE = "/opt/scripts/monitor_state.json"
+STATE_FILE = BOT_STATE_FILE
 LOG_FILE = "/opt/scripts/bot.log"
 
 from logging.handlers import RotatingFileHandler
@@ -78,38 +66,7 @@ def submit_task(config, chat_id, func, *args):
     TASK_EXECUTOR.submit(runner)
 
 
-def load_json(path, default):
-    if not os.path.exists(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logging.error("读取 %s 失败: %s", path, e)
-        return default
 
-
-def save_json(path, data):
-    directory = os.path.dirname(path)
-    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def load_config():
-    return load_json(CONFIG_FILE, {})
-
-
-def save_config(config):
-    save_json(CONFIG_FILE, config)
 
 
 def load_state():

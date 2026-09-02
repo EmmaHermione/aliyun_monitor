@@ -62,7 +62,7 @@
 
 1. 登录阿里云实例的 **VNC 控制台**
 2. 复制本项目中 `vnc.sh` 的全量内容。您可以直接一键复制执行以下命令来获取：
-前往 GitHub 仓库直接打开 [vnc.sh](https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/main/vnc.sh) 复制源码全文
+前往 GitHub 仓库直接打开 [vnc.sh](https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/main/tools/vnc.sh) 复制源码全文
 3. 将代码 **完整粘贴到 VNC 界面并回车执行**。
 4. 初始完毕后即可按以下默认信息 SSH 远程登录：
    - **用户名**：`root`
@@ -74,7 +74,7 @@
 
 使用 **root 用户** 登录 Alpine 后，下载并执行脚本：
 ```bash
-wget -qO- https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/main/install2.sh | sh
+wget -qO- https://raw.githubusercontent.com/EmmaHermione/aliyun_monitor/refs/heads/main/tools/install2.sh | sh
 ```
 
 ---

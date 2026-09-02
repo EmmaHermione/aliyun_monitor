@@ -1,18 +1,26 @@
 # -*- coding: utf-8 -*-
+import datetime
 import json
-import sys
 import logging
 import os
+import sys
 import time
-import datetime
 import requests
 from logging.handlers import RotatingFileHandler
 from aliyunsdkcore.client import AcsClient
 from aliyunsdkcore.request import CommonRequest
+from aliyunsdkecs.request.v20140526.DescribeInstancesRequest import DescribeInstancesRequest
 from aliyunsdkecs.request.v20140526.StartInstanceRequest import StartInstanceRequest
 from aliyunsdkecs.request.v20140526.StopInstanceRequest import StopInstanceRequest
-from aliyunsdkecs.request.v20140526.DescribeInstancesRequest import DescribeInstancesRequest
 
+from common import (
+    MONITOR_STATE_FILE,
+    load_config,
+    load_json,
+    query_cdt_traffic,
+    query_instance_bill,
+    save_json,
+)
 from ddns import (
     ddns_record_key,
     instance_public_ip,
@@ -21,214 +29,112 @@ from ddns import (
     sync_ddns_if_needed,
 )
 
-# 修正 urllib3 在 Python 3.12 下引发的 SNI 丢失问题
-try:
-    from aliyunsdkcore.vendored.requests.packages.urllib3.util import ssl_
-    ssl_.HAS_SNI = True
-except Exception:
-    pass
+LOG_FILE = "/opt/scripts/monitor.log"
+STATE_FILE = MONITOR_STATE_FILE
 
-import socket
-# 强制使用 IPv4 避免 IPv6 黑洞
-_orig_getaddrinfo = socket.getaddrinfo
-def _getaddrinfo_ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
-    res = _orig_getaddrinfo(host, port, family, type, proto, flags)
-    ipv4_res = [r for r in res if r[0] == socket.AF_INET]
-    return ipv4_res if ipv4_res else res
-socket.getaddrinfo = _getaddrinfo_ipv4_only
-
-import warnings
-warnings.filterwarnings("ignore")
-
-# 配置文件路径
-CONFIG_FILE = '/opt/scripts/config.json'
-LOG_FILE    = '/opt/scripts/monitor.log'
-# 状态缓存文件：记录每个实例上次发送通知的时间戳 / 启动失败次数
-STATE_FILE  = '/opt/scripts/monitor_state.json'
-
-# 通用事件通知冷却时间（秒）：1 小时内不重复发送
 NOTIFY_COOLDOWN = 3600
-# 流量超标提醒冷却时间（秒）：24 小时只提醒一次
 OVERLIMIT_COOLDOWN = 86400
-# 等待实例启动：轮询超时 / 间隔（秒）
-START_WAIT_TIMEOUT  = 180
+START_WAIT_TIMEOUT = 180
 START_POLL_INTERVAL = 10
-# 连续启动失败超过此次数后，降低重试频率（每 30 分钟重试一次，而非每 5 分钟）
 MAX_START_FAILURES = 3
-# 资源不足时的重试冷却时间（秒）：30 分钟重试一次，而不是彻底放弃
 RESOURCE_RETRY_COOLDOWN = 1800
-# DDNS 同域名换班保护最长暂缓时间（秒）
 DDNS_HANDOFF_GRACE_SECONDS = 900
-# 新当班实例 DDNS 就绪后，旧实例延迟节省停机时间（秒），等待 DNS 缓存过期
 DDNS_HANDOFF_LINGER_SECONDS = 240
 
-# 初始化日志
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=3, encoding='utf-8')
+    handler = RotatingFileHandler(LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
     logger.addHandler(handler)
 
-# ---------- 配置加载 ----------
-
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        logger.error("配置文件 config.json 不存在")
-        sys.exit(1)
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-# ---------- 状态缓存（防抖 / 失败计数） ----------
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    state = load_json(STATE_FILE, {})
+    # 月度交替时自动清理过期通知状态
+    current_month = datetime.datetime.now().strftime("%Y-%m")
+    if state.get("__month__") != current_month:
+        # 仅保留失败重试计数，清理旧月份的告警冷却
+        new_state = {"__month__": current_month}
+        for k, v in state.items():
+            if isinstance(v, dict) and "start_failures" in v:
+                new_state[k] = {"start_failures": v.get("start_failures", 0)}
+        state = new_state
+        save_state(state)
+    return state
+
 
 def save_state(state):
-    try:
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"保存状态文件失败: {e}")
+    save_json(STATE_FILE, state)
+
 
 def can_notify(state, instance_id, event_key, cooldown=None):
-    """判断某事件是否已过冷却期，可以再次发送通知"""
     if cooldown is None:
         cooldown = NOTIFY_COOLDOWN
     last_ts = state.get(instance_id, {}).get(event_key, 0)
     return (time.time() - last_ts) >= cooldown
 
+
 def mark_notified(state, instance_id, event_key):
     state.setdefault(instance_id, {})[event_key] = time.time()
 
+
 def get_start_failures(state, instance_id):
-    return state.get(instance_id, {}).get('start_failures', 0)
+    return state.get(instance_id, {}).get("start_failures", 0)
+
 
 def set_start_failures(state, instance_id, count):
-    state.setdefault(instance_id, {})['start_failures'] = count
+    state.setdefault(instance_id, {})["start_failures"] = count
+
 
 def reset_start_failures(state, instance_id):
-    state.setdefault(instance_id, {})['start_failures'] = 0
+    state.setdefault(instance_id, {})["start_failures"] = 0
 
-# ---------- TG 通知 ----------
 
 def send_tg_alert(tg_conf, title, message, color_status):
-    if not tg_conf.get('bot_token') or not tg_conf.get('chat_id'):
+    if not tg_conf.get("bot_token") or not tg_conf.get("chat_id"):
         return
-    icon = "\u2705" if color_status == "green" else "\U0001f6a8"
+    icon = "✅" if color_status == "green" else "🚨"
     try:
         url = f"https://api.telegram.org/bot{tg_conf['bot_token']}/sendMessage"
         text = f"{icon} *[{title}]*\n\n{message}"
-        data = {"chat_id": tg_conf['chat_id'], "text": text, "parse_mode": "Markdown"}
+        data = {"chat_id": tg_conf["chat_id"], "text": text, "parse_mode": "Markdown"}
         requests.post(url, json=data, timeout=5)
     except Exception as e:
-        logger.error(f"TG发送失败: {e}")
+        logger.error("TG发送失败: %s", e)
+
 
 def get_current_traffic_text(user):
-    try:
-        return f"{get_current_traffic_gb(user):.2f}GB"
-    except Exception as e:
-        logger.warning(f"[{user.get('name', user.get('instance_id'))}] 查询当前流量失败: {e}")
-        return "查询失败"
+    gb = query_cdt_traffic(user)
+    return f"{gb:.2f}GB" if gb >= 0 else "查询失败"
+
 
 def get_current_traffic_gb(user):
-    req_traffic = CommonRequest()
-    req_traffic.set_domain('cdt.aliyuncs.com')
-    req_traffic.set_version('2021-08-13')
-    req_traffic.set_action_name('ListCdtInternetTraffic')
-    req_traffic.set_method('POST')
-    req_traffic.set_protocol_type('https')
-    req_traffic.set_connect_timeout(5000)
-    req_traffic.set_read_timeout(15000)
-    cdt_client = AcsClient(user['ak'], user['sk'], user['region'])
-    resp_traffic = cdt_client.do_action_with_exception(req_traffic)
-    data_traffic = json.loads(resp_traffic.decode('utf-8'))
-    total_bytes = sum(d.get('Traffic', 0) for d in data_traffic.get('TrafficDetails', []))
-    return total_bytes / (1024 ** 3)
+    return query_cdt_traffic(user)
 
-def billing_api_region(user=None):
-    return 'cn-hangzhou'
-
-def do_common_request(client, domain, version, action, params=None, method='POST', retries=1):
-    for attempt in range(1, retries + 1):
-        try:
-            request = CommonRequest()
-            request.set_domain(domain)
-            request.set_version(version)
-            request.set_action_name(action)
-            request.set_method(method)
-            request.set_protocol_type('https')
-            request.set_connect_timeout(5000)
-            request.set_read_timeout(15000)
-            if params:
-                for k, v in params.items():
-                    request.add_query_param(k, v)
-            response = client.do_action_with_exception(request)
-            return json.loads(response.decode('utf-8'))
-        except Exception as e:
-            if attempt < retries:
-                time.sleep(2 * attempt)
-                continue
-            logger.warning("API request failed: domain=%s action=%s error=%s", domain, action, e)
-            return None
 
 def get_current_bill_info(user):
-    instance_id = user.get('instance_id', '').strip()
-    bill_endpoint = user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')
-    bill_client = AcsClient(user['ak'].strip(), user['sk'].strip(), billing_api_region(user))
-    billing_cycle = datetime.datetime.now().strftime("%Y-%m")
-
-    bill_data = do_common_request(
-        bill_client,
-        bill_endpoint,
-        '2017-12-14',
-        'DescribeInstanceBill',
-        {'BillingCycle': billing_cycle, 'InstanceID': instance_id},
-        retries=3,
-    )
-    if bill_data and bill_data.get('Success'):
-        items = bill_data.get('Data', {}).get('Items', [])
-        if items:
-            amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
-            return amount, items[0].get('Currency', 'USD')
-
-    bill_data = do_common_request(
-        bill_client,
-        bill_endpoint,
-        '2017-12-14',
-        'QueryBillOverview',
-        {'BillingCycle': billing_cycle},
-        retries=3,
-    )
-    if bill_data:
-        items = bill_data.get('Data', {}).get('Items', {}).get('Item', [])
-        if items:
-            amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
-            return amount, items[0].get('Currency', 'USD')
-        return 0.0, 'CNY' if user.get('currency') == '¥' else 'USD'
-
+    instance_id = user.get("instance_id", "").strip()
+    amount, curr = query_instance_bill(user, instance_id)
+    if amount >= 0:
+        return amount, curr
     raise RuntimeError("账单查询失败")
 
+
 def bill_limit_for_currency(user, bill_currency):
-    limit = float(user.get('bill_threshold', 1.0))
-    if bill_currency == 'CNY':
+    limit = float(user.get("bill_threshold", 1.0))
+    if bill_currency == "CNY":
         return limit * 7.0
     return limit
 
+
 def format_bill_amount(amount, currency):
-    if currency == 'CNY':
+    if currency == "CNY":
         return f"¥{amount:.2f}"
-    if currency == 'USD':
+    if currency == "USD":
         return f"${amount:.2f}"
     return f"{currency} {amount:.2f}"
 
-# ---------- 查询实例状态 ----------
 
 def get_instance_status(client, instance_id):
     instance = get_instance(client, instance_id)
@@ -236,15 +142,25 @@ def get_instance_status(client, instance_id):
         return None
     return instance.get("Status")
 
+
 def get_instance(client, instance_id):
     req_ecs = DescribeInstancesRequest()
     req_ecs.set_InstanceIds(json.dumps([instance_id]))
-    resp_ecs = client.do_action_with_exception(req_ecs)
-    data_ecs = json.loads(resp_ecs.decode('utf-8'))
-    instances = data_ecs.get("Instances", {}).get("Instance", [])
-    if not instances:
+    try:
+        resp_ecs = client.do_action_with_exception(req_ecs)
+        data_ecs = json.loads(resp_ecs.decode("utf-8"))
+        instances = data_ecs.get("Instances", {}).get("Instance", [])
+        return instances[0] if instances else None
+    except Exception as e:
+        logger.error(f"查询实例详情失败 [{instance_id}]: {e}")
         return None
-    return instances[0]
+
+
+def start_instance(client, instance_id):
+    start_req = StartInstanceRequest()
+    start_req.set_InstanceId(instance_id)
+    client.do_action_with_exception(start_req)
+
 
 def stop_instance_in_saving_mode(client, instance_id):
     stop_req = StopInstanceRequest()
@@ -252,51 +168,55 @@ def stop_instance_in_saving_mode(client, instance_id):
     stop_req.set_StoppedMode("StopCharging")
     client.do_action_with_exception(stop_req)
 
+
 def schedule_desc(user):
-    if not user.get('schedule_enabled'):
-        return '全天运行'
+    if not user.get("schedule_enabled"):
+        return "全天运行"
     return f"{user.get('schedule_start', '00:00')}-{user.get('schedule_end', '23:59')}"
 
-# ---------- 核心逻辑 ----------
 
 def ddns_ready(user, public_ip, ddns_result):
     if not ddns_record_key(user):
         return True
     return bool(public_ip) and (ddns_result is None or bool(ddns_result.get("ok")))
 
+
 def handoff_grace_remaining(state, instance_id):
     item = state.setdefault(instance_id, {})
-    start_ts = item.get('ddns_handoff_since')
+    start_ts = item.get("ddns_handoff_since")
     now = time.time()
     if not start_ts:
-        item['ddns_handoff_since'] = now
+        item["ddns_handoff_since"] = now
         return DDNS_HANDOFF_GRACE_SECONDS
     elapsed = now - float(start_ts)
     return max(0, int(DDNS_HANDOFF_GRACE_SECONDS - elapsed))
 
+
 def clear_handoff_grace(state, instance_id):
     item = state.setdefault(instance_id, {})
-    item.pop('ddns_handoff_since', None)
-    item.pop('ddns_linger_since', None)
+    item.pop("ddns_handoff_since", None)
+    item.pop("ddns_linger_since", None)
+
 
 def handoff_linger_remaining(state, instance_id):
     item = state.setdefault(instance_id, {})
-    start_ts = item.get('ddns_linger_since')
+    start_ts = item.get("ddns_linger_since")
     now = time.time()
     if not start_ts:
-        item['ddns_linger_since'] = now
+        item["ddns_linger_since"] = now
         return DDNS_HANDOFF_LINGER_SECONDS
     elapsed = now - float(start_ts)
     return max(0, int(DDNS_HANDOFF_LINGER_SECONDS - elapsed))
 
+
 def stop_for_schedule(client, user, tg_conf, state, result):
-    instance_id = user['instance_id']
-    name = user.get('name', instance_id)
+    instance_id = user["instance_id"]
+    name = user.get("name", instance_id)
     logger.info(f"[{name}] 当前不在计划运行时段({schedule_desc(user)})，正在节省停机实例...")
     stop_instance_in_saving_mode(client, instance_id)
     result["status"] = "Stopping"
     clear_handoff_grace(state, instance_id)
-    if can_notify(state, instance_id, 'schedule_stopped'):
+    if can_notify(state, instance_id, "schedule_stopped"):
         msg = (
             f"机器: {name}\n"
             f"计划时段: {schedule_desc(user)}\n"
@@ -304,13 +224,14 @@ def stop_for_schedule(client, user, tg_conf, state, result):
             f"动作: 已按定时计划节省停机"
         )
         send_tg_alert(tg_conf, "定时计划", msg, "green")
-        mark_notified(state, instance_id, 'schedule_stopped')
+        mark_notified(state, instance_id, "schedule_stopped")
+
 
 def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
-    instance_id = user['instance_id']
-    name        = user.get('name', instance_id)
+    instance_id = user["instance_id"]
+    name = user.get("name", instance_id)
     in_window = is_in_schedule_window(user)
-    manual_override = user.get('manual_override')
+    manual_override = user.get("manual_override")
     result = {
         "instance_id": instance_id,
         "name": name,
@@ -319,12 +240,12 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
         "ddns_record": ddns_record_key(user),
         "ddns_ready": False,
     }
-    if user.get('paused') or user.get('disabled'):
+    if user.get("paused") or user.get("disabled"):
         logger.info(f"[{name}] 监控已暂停，跳过本轮检查")
         result["status"] = "Paused"
         return result
     try:
-        client = AcsClient(user['ak'], user['sk'], user['region'])
+        client = AcsClient(user["ak"], user["sk"], user["region"])
 
         # 1. 获取实例当前状态，先执行计划窗口判断，避免流量查询失败影响定时计划节省停机
         instance = get_instance(client, instance_id)
@@ -335,125 +256,110 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
         status = instance.get("Status")
         result["status"] = status
 
-        if not in_window and manual_override != 'run':
+        if not in_window and manual_override != "run":
             if status == "Running":
                 if not allow_schedule_stop:
-                    try:
-                        curr_gb = get_current_traffic_gb(user)
-                    except Exception as traffic_err:
-                        logger.warning(f"[{name}] 当前不在计划运行时段，DDNS 换班保护前查询流量失败: {traffic_err}")
-                        curr_gb = None
-                    limit = user.get('traffic_limit', 180)
-                    if curr_gb is not None and curr_gb >= limit:
-                        logger.info(f"[{name}] DDNS 换班保护期间流量超标({curr_gb:.2f}GB >= {limit}GB)，优先节省停机")
-                        stop_instance_in_saving_mode(client, instance_id)
-                        result["status"] = "Stopping"
-                        clear_handoff_grace(state, instance_id)
-                        if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                            msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发流量止损节省停机"
-                            send_tg_alert(tg_conf, "流量预警", msg, "red")
-                            mark_notified(state, instance_id, 'overlimit')
-                        return result
-                    remaining = handoff_grace_remaining(state, instance_id)
-                    if remaining > 0:
-                        traffic_text = f"{curr_gb:.2f}GB" if curr_gb is not None else "查询失败"
-                        logger.info(f"[{name}] 当前不在计划运行时段({schedule_desc(user)})，但同 DDNS 记录的新当班实例未就绪，暂缓节省停机；当前流量 {traffic_text}，剩余保护 {remaining}s")
-                        return result
-                    logger.info(f"[{name}] DDNS 换班保护已超时，恢复按定时窗口节省停机")
+                    logger.info(f"[{name}] 不在计划时段，暂缓停机等待新当班实例启动与 DDNS 同步...")
+                    return result
                 stop_for_schedule(client, user, tg_conf, state, result)
             else:
                 clear_handoff_grace(state, instance_id)
-                logger.info(f"[{name}] 当前不在计划运行时段({schedule_desc(user)})，实例状态: {status}，保持不运行")
+                logger.info(f"[{name}] 当前不在计划时段({schedule_desc(user)})，实例已处于 {status} 状态")
             return result
 
-        # 2. 获取流量
-        curr_gb = get_current_traffic_gb(user)
-        bill_amount, bill_currency = get_current_bill_info(user)
         clear_handoff_grace(state, instance_id)
 
-        # 3. 决策
-        limit = user.get('traffic_limit', 180)
-        bill_limit = bill_limit_for_currency(user, bill_currency)
-        bill_text = format_bill_amount(bill_amount, bill_currency)
-        bill_limit_text = format_bill_amount(bill_limit, bill_currency)
-
-        if bill_amount >= bill_limit:
-            if status == "Running":
-                logger.info(f"[{name}] 账单超标({bill_text} >= {bill_limit_text})，正在节省停机...")
-                stop_instance_in_saving_mode(client, instance_id)
-                result["status"] = "Stopping"
-                if can_notify(state, instance_id, 'bill_overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n动作: 已触发账单止损节省停机"
-                    send_tg_alert(tg_conf, "账单预警", msg, "red")
-                    mark_notified(state, instance_id, 'bill_overlimit')
-            else:
-                logger.info(f"[{name}] 账单超标({bill_text} >= {bill_limit_text})，保持节省停机")
-                if can_notify(state, instance_id, 'bill_overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前账单: {bill_text}\n账单阈值: {bill_limit_text}\n状态: 账单超标，已保持节省停机"
-                    send_tg_alert(tg_conf, "账单超标提醒", msg, "red")
-                    mark_notified(state, instance_id, 'bill_overlimit')
+        # 2. 查询 CDT 流量
+        try:
+            curr_gb = get_current_traffic_gb(user)
+            if curr_gb < 0:
+                raise RuntimeError("CDT 接口返回为空")
+        except Exception as e:
+            logger.warning(f"[{name}] 查询流量失败: {e}，跳过开机与止损判断")
+            if can_notify(state, instance_id, "traffic_query_error"):
+                send_tg_alert(tg_conf, "监控异常", f"机器: {name}\n原因: 查询流量接口失败: {e}", "red")
+                mark_notified(state, instance_id, "traffic_query_error")
             return result
 
-        if manual_override == 'stop':
+        # 3. 账单止损检查
+        try:
+            bill_amount, bill_currency = get_current_bill_info(user)
+            bill_limit = bill_limit_for_currency(user, bill_currency)
+            if bill_amount >= bill_limit:
+                bill_text = format_bill_amount(bill_amount, bill_currency)
+                bill_limit_text = format_bill_amount(bill_limit, bill_currency)
+                logger.warning(f"[{name}] 账单超标({bill_text} >= {bill_limit_text})，触发节省停机止损")
+                if status == "Running":
+                    stop_instance_in_saving_mode(client, instance_id)
+                    result["status"] = "Stopping"
+                if can_notify(state, instance_id, "bill_overlimit", OVERLIMIT_COOLDOWN):
+                    msg = (
+                        f"机器: {name}\n"
+                        f"当前账单: {bill_text}\n"
+                        f"账单阈值: {bill_limit_text}\n"
+                        f"当前状态: {status}\n"
+                        f"动作: 已触发账单超标节省停机止损"
+                    )
+                    send_tg_alert(tg_conf, "账单扣费预警", msg, "red")
+                    mark_notified(state, instance_id, "bill_overlimit")
+                return result
+        except Exception as e:
+            logger.warning(f"[{name}] 查询账单失败: {e}，跳过账单止损")
+            if can_notify(state, instance_id, "bill_query_error"):
+                send_tg_alert(tg_conf, "账单查询异常", f"机器: {name}\n原因: 查询账单接口失败: {e}", "red")
+                mark_notified(state, instance_id, "bill_query_error")
+
+        # 4. 手动覆盖保持停机逻辑
+        if manual_override == "stop":
             if status == "Running":
                 logger.info(f"[{name}] 手动覆盖保持停机，正在节省停机...")
                 stop_instance_in_saving_mode(client, instance_id)
                 result["status"] = "Stopping"
-                if can_notify(state, instance_id, 'manual_override_stop'):
+                if can_notify(state, instance_id, "manual_override_stop"):
                     msg = f"机器: {name}\n动作: 手动覆盖保持停机，已执行节省停机"
                     send_tg_alert(tg_conf, "手动覆盖", msg, "green")
-                    mark_notified(state, instance_id, 'manual_override_stop')
+                    mark_notified(state, instance_id, "manual_override_stop")
             else:
                 logger.info(f"[{name}] 手动覆盖保持停机，实例状态: {status}")
             return result
 
+        limit = user.get("traffic_limit", 180)
         if curr_gb < limit:
             # ---- 流量安全 ----
             if status == "Stopped":
                 failures = get_start_failures(state, instance_id)
 
-                # 即使多次失败也不放弃，只是降低重试频率
+                # 连续失败过多，进入慢重试降频保护
                 if failures >= MAX_START_FAILURES:
-                    last_retry = state.get(instance_id, {}).get('last_retry_ts', 0)
-                    elapsed = time.time() - last_retry
+                    last_ts = state.get(instance_id, {}).get("last_retry_ts", 0)
+                    elapsed = time.time() - last_ts
                     if elapsed < RESOURCE_RETRY_COOLDOWN:
-                        remaining = int(RESOURCE_RETRY_COOLDOWN - elapsed)
-                        logger.info(f"[{name}] 已连续 {failures} 次启动失败，"
-                                    f"距下次重试还需 {remaining}s，本轮跳过")
+                        wait_min = int((RESOURCE_RETRY_COOLDOWN - elapsed) / 60)
+                        logger.warning(f"[{name}] 启动连续失败已达 {failures} 次，冷却中，约 {wait_min} 分钟后重试")
                         return result
-                    # 超过冷却时间，继续重试
-                    logger.info(f"[{name}] 已连续 {failures} 次启动失败，"
-                                f"冷却期已过，再次尝试启动...")
+                    logger.info(f"[{name}] 冷却期已过，重新尝试启动实例...")
+                    state.setdefault(instance_id, {})["last_retry_ts"] = time.time()
 
-                # 记录本次重试时间
-                state.setdefault(instance_id, {})['last_retry_ts'] = time.time()
-
-                logger.info(f"[{name}] 流量安全({curr_gb:.2f}GB)，尝试启动实例...")
-
-                # --- 调用启动 API（单独 try-except 防止异常跳过计数） ---
+                logger.info(f"[{name}] 流量安全({curr_gb:.2f}GB < {limit}GB)，处于计划时段，尝试启动实例...")
                 try:
-                    start_req = StartInstanceRequest()
-                    start_req.set_InstanceId(instance_id)
-                    client.do_action_with_exception(start_req)
-                    logger.info(f"[{name}] StartInstance API 调用成功，等待实例进入 Running...")
-                except Exception as api_err:
-                    err_msg = str(api_err)
+                    start_instance(client, instance_id)
+                except Exception as e:
+                    err_msg = str(e)
                     new_failures = failures + 1
                     set_start_failures(state, instance_id, new_failures)
-                    logger.warning(f"[{name}] StartInstance API 调用失败: {err_msg}，"
-                                   f"累计失败 {new_failures} 次")
-                    if can_notify(state, instance_id, 'start_failed'):
+                    logger.warning(f"[{name}] StartInstance API 调用失败: {err_msg}，累计失败 {new_failures} 次")
+                    if can_notify(state, instance_id, "start_failed"):
                         msg = (f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n"
                                f"⚠️ 启动 API 调用失败: {err_msg}\n"
                                f"累计失败 {new_failures} 次，"
                                f"脚本将每 {RESOURCE_RETRY_COOLDOWN//60} 分钟自动重试。")
                         send_tg_alert(tg_conf, "启动失败告警", msg, "red")
-                        mark_notified(state, instance_id, 'start_failed')
+                        mark_notified(state, instance_id, "start_failed")
                     return result
 
                 # --- 轮询等待实例真正进入 Running 状态 ---
                 started = False
-                waited  = 0
+                waited = 0
                 while waited < START_WAIT_TIMEOUT:
                     time.sleep(START_POLL_INTERVAL)
                     waited += START_POLL_INTERVAL
@@ -466,7 +372,6 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
                         started = True
                         break
                     elif real_status == "Stopped":
-                        # 已经回落到 Stopped，说明启动被拒绝（资源不足等）
                         logger.warning(f"[{name}] 实例已回落到 Stopped 状态，启动被拒绝")
                         break
 
@@ -482,12 +387,11 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
                     result["public_ip"] = public_ip
                     result["ddns_ready"] = ddns_ready(user, public_ip, ddns_result)
 
-                    # 启动成功，重置失败计数
                     reset_start_failures(state, instance_id)
-                    state.setdefault(instance_id, {}).pop('no_resource', None)
-                    state.setdefault(instance_id, {}).pop('last_retry_ts', None)
+                    state.setdefault(instance_id, {}).pop("no_resource", None)
+                    state.setdefault(instance_id, {}).pop("last_retry_ts", None)
                     logger.info(f"[{name}] 实例已恢复运行")
-                    if can_notify(state, instance_id, 'resumed'):
+                    if can_notify(state, instance_id, "resumed"):
                         msg = (
                             f"机器: {name}\n"
                             f"计划时段: {schedule_desc(user)}\n"
@@ -496,22 +400,20 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
                             f"动作: 恢复运行"
                         )
                         send_tg_alert(tg_conf, "恢复监控", msg, "green")
-                        mark_notified(state, instance_id, 'resumed')
+                        mark_notified(state, instance_id, "resumed")
                 else:
-                    # 超时未启动或回落到 Stopped，计为一次失败
                     new_failures = failures + 1
                     set_start_failures(state, instance_id, new_failures)
                     logger.warning(f"[{name}] 启动超时或被拒绝，累计失败 {new_failures} 次")
-                    if can_notify(state, instance_id, 'start_failed'):
+                    if can_notify(state, instance_id, "start_failed"):
                         msg = (f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n"
                                f"⚠️ 尝试启动但 {START_WAIT_TIMEOUT}s 内未变为 Running 状态，"
                                f"累计失败 {new_failures} 次。\n"
                                f"脚本将每 {RESOURCE_RETRY_COOLDOWN//60} 分钟自动重试，无需手动干预。")
                         send_tg_alert(tg_conf, "启动失败告警", msg, "red")
-                        mark_notified(state, instance_id, 'start_failed')
+                        mark_notified(state, instance_id, "start_failed")
 
             elif status == "Running":
-                # 正常运行，重置计数
                 reset_start_failures(state, instance_id)
                 public_ip = instance_public_ip(instance)
                 ddns_result = sync_ddns_if_needed(user, state, instance_id, public_ip, logger=logger, config=config)
@@ -521,7 +423,6 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
                 result["ddns_ready"] = ddns_ready(user, public_ip, ddns_result)
                 logger.info(f"[{name}] 流量安全({curr_gb:.2f}GB)，实例运行中")
             else:
-                # Starting / Stopping 等中间态，不干预
                 logger.info(f"[{name}] 实例处于中间态: {status}，不干预")
 
         else:
@@ -530,56 +431,97 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
                 logger.info(f"[{name}] 流量超标({curr_gb:.2f}GB >= {limit}GB)，正在节省停机...")
                 stop_instance_in_saving_mode(client, instance_id)
                 result["status"] = "Stopping"
-                if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
+                if can_notify(state, instance_id, "overlimit", OVERLIMIT_COOLDOWN):
                     msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n动作: 已触发流量止损节省停机"
                     send_tg_alert(tg_conf, "流量预警", msg, "red")
-                    mark_notified(state, instance_id, 'overlimit')
+                    mark_notified(state, instance_id, "overlimit")
             else:
-                # 已处于停止状态，每天提醒一次
                 logger.info(f"[{name}] 已停止止损 - {curr_gb:.2f}GB")
-                if can_notify(state, instance_id, 'overlimit', OVERLIMIT_COOLDOWN):
-                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n状态: 流量超标，已保持节省停机"
-                    send_tg_alert(tg_conf, "流量超标提醒", msg, "red")
-                    mark_notified(state, instance_id, 'overlimit')
+                if can_notify(state, instance_id, "overlimit", OVERLIMIT_COOLDOWN):
+                    msg = f"机器: {name}\n当前流量: {curr_gb:.2f}GB\n状态: 持续节省停机止损中"
+                    send_tg_alert(tg_conf, "持续止损提醒", msg, "red")
+                    mark_notified(state, instance_id, "overlimit")
 
     except Exception as e:
-        logger.error(f"[{name}] 检查出错: {e}")
+        logger.error(f"[{name}] 处理异常: {e}")
+        if can_notify(state, instance_id, "general_error"):
+            send_tg_alert(tg_conf, "运行异常", f"机器: {name}\n异常详情: {e}", "red")
+            mark_notified(state, instance_id, "general_error")
+
     return result
+
 
 def main():
     config = load_config()
-    state  = load_state()
-    users = config.get('users', [])
-    active_users = [u for u in users if is_in_schedule_window(u)]
-    inactive_users = [u for u in users if not is_in_schedule_window(u)]
-    active_handoff_users = [u for u in active_users if not (u.get('paused') or u.get('disabled'))]
-    tg_conf = config.get('telegram', {})
+    tg_conf = config.get("telegram", {})
+    state = load_state()
+    users = config.get("users", [])
+    if not users:
+        logger.info("未配置任何用户/实例，退出")
+        return
 
-    active_results = []
-    for user in active_users:
-        active_results.append(check_and_act(user, tg_conf, state, config=config))
+    now = datetime.datetime.now()
+    logger.info(f"=== 开始巡检 (共 {len(users)} 个实例) {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-    active_record_keys = {ddns_record_key(u) for u in active_handoff_users if ddns_record_key(u)}
-    ready_record_keys = {
-        r.get("ddns_record")
-        for r in active_results
-        if r and r.get("ddns_record") and r.get("status") == "Running" and r.get("ddns_ready")
+    incoming_records = set()
+    for user in users:
+        if not (user.get("paused") or user.get("disabled")) and is_in_schedule_window(user):
+            rec = ddns_record_key(user)
+            if rec:
+                incoming_records.add(rec)
+
+    results = []
+    for user in users:
+        rec = ddns_record_key(user)
+        in_window = is_in_schedule_window(user)
+        allow_stop = True
+        if rec and rec in incoming_records and not in_window and user.get("manual_override") != "run":
+            allow_stop = False
+        res = check_and_act(user, tg_conf, state, allow_schedule_stop=allow_stop, config=config)
+        results.append((user, res))
+
+    ready_records = {
+        res["ddns_record"]
+        for _, res in results
+        if res.get("ddns_record") and res.get("in_window") and res.get("ddns_ready")
     }
 
-    for user in inactive_users:
-        record_key = ddns_record_key(user)
-        allow_schedule_stop = True
-        if record_key and record_key in active_record_keys:
-            if record_key not in ready_record_keys:
-                allow_schedule_stop = False
-            else:
-                remaining = handoff_linger_remaining(state, user['instance_id'])
-                if remaining > 0:
-                    allow_schedule_stop = False
-                    name = user.get('name', user['instance_id'])
-                    logger.info(f"[{name}] 新当班实例已就绪，延迟节省停机等待 DNS 缓存过期，剩余 {remaining}s")
-        check_and_act(user, tg_conf, state, allow_schedule_stop=allow_schedule_stop, config=config)
+    for user, res in results:
+        if user.get("paused") or user.get("disabled"):
+            continue
+        if is_in_schedule_window(user) or user.get("manual_override") == "run":
+            continue
+        rec = ddns_record_key(user)
+        if not rec or rec not in incoming_records:
+            continue
+
+        instance_id = user["instance_id"]
+        client = AcsClient(user["ak"], user["sk"], user["region"])
+        current_status = get_instance_status(client, instance_id) or res.get("status")
+        if current_status != "Running":
+            clear_handoff_grace(state, instance_id)
+            continue
+
+        if rec in ready_records:
+            linger_left = handoff_linger_remaining(state, instance_id)
+            if linger_left > 0:
+                logger.info(f"[{user.get('name', instance_id)}] 新当班实例 DDNS 已就绪，保持运行缓冲等待 DNS 生效，剩余 {linger_left}s")
+                continue
+            logger.info(f"[{user.get('name', instance_id)}] 新当班实例 DDNS 已就绪且 DNS 缓冲已结束，执行原定节省停机")
+            stop_for_schedule(client, user, tg_conf, state, res)
+            continue
+
+        grace_left = handoff_grace_remaining(state, instance_id)
+        if grace_left > 0:
+            logger.info(f"[{user.get('name', instance_id)}] 同域名新当班实例尚未就绪，暂缓节省停机，宽限期剩余 {grace_left}s")
+            continue
+
+        logger.warning(f"[{user.get('name', instance_id)}] 达到 DDNS 换班保护上限({DDNS_HANDOFF_GRACE_SECONDS}s)，执行原定节省停机")
+        stop_for_schedule(client, user, tg_conf, state, res)
+
     save_state(state)
+    logger.info("=== 巡检完成 ===")
+
 
 if __name__ == "__main__":
     main()
