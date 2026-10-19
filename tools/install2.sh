@@ -30,15 +30,17 @@ read_with_default() {
     default_val="$3"
     input_val=""
 
-    if [ -t 0 ] || [ -t 1 ]; then
-        printf "%s" "$prompt" >/dev/tty
-        IFS= read -r input_val </dev/tty || input_val=""
+    if [ -c /dev/tty ]; then
+        printf "%s" "$prompt" >/dev/tty 2>/dev/null || true
+        IFS= read -r input_val </dev/tty 2>/dev/null || input_val=""
     fi
 
     if [ -z "$input_val" ]; then
         input_val="$default_val"
     fi
 
+    # 移除危险的引号与命令替换字符，防止注入
+    input_val=$(printf '%s' "$input_val" | tr -d '`"'\''$()')
     eval "$var_name=\"$input_val\""
 }
 

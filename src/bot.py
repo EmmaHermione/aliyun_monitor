@@ -115,7 +115,12 @@ def send_message(config, chat_id, text, reply_markup=None, parse_mode=None):
         payload["reply_markup"] = reply_markup
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    return tg_request(config, "sendMessage", payload)
+    res = tg_request(config, "sendMessage", payload)
+    if not res.get("ok") and parse_mode:
+        # Markdown 语法解析异常时降级纯文本重发，保障消息必达
+        payload.pop("parse_mode", None)
+        res = tg_request(config, "sendMessage", payload)
+    return res
 
 
 def edit_message(config, chat_id, message_id, text, reply_markup=None, parse_mode=None):
@@ -124,7 +129,11 @@ def edit_message(config, chat_id, message_id, text, reply_markup=None, parse_mod
         payload["reply_markup"] = reply_markup
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    return tg_request(config, "editMessageText", payload)
+    res = tg_request(config, "editMessageText", payload)
+    if not res.get("ok") and parse_mode:
+        payload.pop("parse_mode", None)
+        res = tg_request(config, "editMessageText", payload)
+    return res
 
 
 def delete_message(config, chat_id, message_id):
@@ -211,6 +220,13 @@ def wait_until_running(user, timeout=START_WAIT_TIMEOUT_SECONDS):
         waited += START_WAIT_INTERVAL_SECONDS
         status, inst = get_status(user)
         if status == "Running":
+            # 若公网 IP 暂未就绪，快速重试 3 次等待网络接口就绪
+            if inst and not instance_public_ip(inst):
+                for _ in range(3):
+                    time.sleep(2)
+                    _, fresh_inst = get_status(user)
+                    if fresh_inst and instance_public_ip(fresh_inst):
+                        return status, fresh_inst
             return status, inst
         if status in ("NotFound", "Stopped"):
             return status, inst
@@ -418,9 +434,19 @@ def run_action(config, chat_id, action, index):
         f"{name} 的{action_name}操作仍未返回，可能是阿里云接口或服务器网络超时，请稍后查看结果。",
     )
     try:
+        # 重新加载最新配置，避免覆盖其它并发指令修改
+        current_conf = load_config()
+        conf_users = users(current_conf)
+        if 0 <= index < len(conf_users):
+            target_u = conf_users[index]
+            if action in ("start", "reboot"):
+                target_u["manual_override"] = "run"
+                save_config(current_conf)
+            elif action == "stop":
+                target_u["manual_override"] = "stop"
+                save_config(current_conf)
+
         if action == "start":
-            user["manual_override"] = "run"
-            save_config(config)
             start_instance(user)
             status, inst = wait_until_running(user)
             if status == "Running":
@@ -449,13 +475,9 @@ def run_action(config, chat_id, action, index):
             else:
                 send_message(config, chat_id, f"已发送开机指令: {name}\n当前状态: {status}\n手动覆盖: 保持运行")
         elif action == "stop":
-            user["manual_override"] = "stop"
-            save_config(config)
             stop_instance(user)
             send_message(config, chat_id, f"已发送节省停机指令: {name}\n手动覆盖: 保持停机")
         elif action == "reboot":
-            user["manual_override"] = "run"
-            save_config(config)
             reboot_instance(user)
             send_message(config, chat_id, f"已发送重启指令: {name}\n手动覆盖: 保持运行")
         elif action == "status":

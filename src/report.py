@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import datetime
+import json
 import logging
 import os
 import sys
@@ -28,10 +29,14 @@ if not logger.handlers:
 def send_tg_report(tg_conf, message):
     if not tg_conf.get("bot_token") or not tg_conf.get("chat_id"):
         return
+    url = f"https://api.telegram.org/bot{tg_conf['bot_token']}/sendMessage"
+    data = {"chat_id": tg_conf["chat_id"], "text": message, "parse_mode": "Markdown"}
     try:
-        url = f"https://api.telegram.org/bot{tg_conf['bot_token']}/sendMessage"
-        data = {"chat_id": tg_conf["chat_id"], "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=data, timeout=10)
+        resp = requests.post(url, json=data, timeout=10)
+        if not resp.ok:
+            logger.warning("Telegram 日报发送返回非 200 (%s)，尝试纯文本降级发送", resp.status_code)
+            data.pop("parse_mode", None)
+            requests.post(url, json=data, timeout=10)
     except Exception as e:
         logger.error("发送 TG 日报失败: %s", e)
 
@@ -69,7 +74,9 @@ def build_user_report(user, balance_cache=None):
     target_id = user.get("instance_id", "").strip()
     target_region = user.get("region", "").strip()
     resgroup = user.get("resgroup", "").strip()
-    user_name = user.get("name", "").strip() or target_id or "Unknown_Device"
+    raw_name = user.get("name", "").strip() or target_id or "Unknown Device"
+    # 避免 Telegram Markdown 实体下划线解析异常
+    user_name = raw_name.replace("_", " ")
 
     client = AcsClient(user["ak"].strip(), user["sk"].strip(), target_region) if AcsClient else None
 
@@ -91,7 +98,7 @@ def build_user_report(user, balance_cache=None):
             balance_str = f" | 💳 余额: {curr_sym}{avail_bal:.2f}"
 
     # 4. ECS 状态
-    ecs_params = {"PageSize": 50, "RegionId": target_region}
+    ecs_params = {"PageSize": 10, "RegionId": target_region, "InstanceIds": json.dumps([target_id])}
     if resgroup:
         ecs_params["ResourceGroupId"] = resgroup
     ecs_data = do_common_request(client, "ecs.aliyuncs.com", "2014-05-26", "DescribeInstances", ecs_params)

@@ -56,6 +56,7 @@ def load_json(file_path, default_value=None):
 
 def save_json(file_path, data):
     directory = os.path.dirname(file_path) or "."
+    os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -93,8 +94,8 @@ def do_common_request(client, domain, version, action, params=None, method="POST
             request.set_action_name(action)
             request.set_method(method)
             request.set_protocol_type("https")
-            request.set_connect_timeout(5000)
-            request.set_read_timeout(15000)
+            request.set_connect_timeout(10)
+            request.set_read_timeout(15)
             if params:
                 for k, v in params.items():
                     request.add_query_param(k, v)
@@ -110,19 +111,46 @@ def do_common_request(client, domain, version, action, params=None, method="POST
 
 def query_cdt_traffic(user):
     """查询 CDT 公网流量 (GB)。成功返回 float，失败返回 -1"""
+    if AcsClient is None:
+        logging.warning("未安装 aliyunsdkcore 模块，跳过 CDT 流量查询")
+        return -1
     try:
         client = AcsClient(user["ak"].strip(), user["sk"].strip(), "cn-hangzhou")
         data = do_common_request(client, "cdt.aliyuncs.com", "2021-08-13", "ListCdtInternetTraffic", retries=3)
-        if data:
-            total_bytes = sum(d.get("Traffic", 0) for d in data.get("TrafficDetails", []))
-            return total_bytes / (1024 ** 3)
+        if data and isinstance(data, dict):
+            if data.get("Code"):
+                logging.warning("查询 CDT 流量接口返回错误 [%s]: %s", data.get("Code"), data.get("Message"))
+                return -1
+            if "TrafficDetails" in data:
+                details = data.get("TrafficDetails") or []
+                total_bytes = sum(float(d.get("Traffic", 0)) for d in details if isinstance(d, dict))
+                return total_bytes / (1024 ** 3)
     except Exception as e:
         logging.warning("查询 CDT 流量异常: %s", e)
     return -1
 
 
+def _extract_bill_items(data):
+    """安全提取账单 API 返回的条目列表，兼容 List 与 Items.Item 字典结构"""
+    if not isinstance(data, dict):
+        return None
+    data_obj = data.get("Data")
+    if not isinstance(data_obj, dict):
+        return None
+    items_obj = data_obj.get("Items")
+    if isinstance(items_obj, dict):
+        items_obj = items_obj.get("Item")
+    if isinstance(items_obj, list):
+        return items_obj
+    return []
+
+
 def query_instance_bill(user, instance_id):
     """查询实例当月账单。返回 (金额 float, 货币代码 str)；失败返回 (-1, 'USD')"""
+    currency = user.get("currency", "USD")
+    if AcsClient is None:
+        logging.warning("未安装 aliyunsdkcore 模块，跳过账单查询")
+        return -1, currency
     ak = user["ak"].strip()
     sk = user["sk"].strip()
     bill_endpoint = user.get("bill_endpoint", "business.ap-southeast-1.aliyuncs.com")
@@ -136,27 +164,34 @@ def query_instance_bill(user, instance_id):
     }
     data = do_common_request(bill_client, bill_endpoint, "2017-12-14", "DescribeInstanceBill", params, retries=3)
     if data and data.get("Success"):
-        items = data.get("Data", {}).get("Items", [])
-        if items:
-            amount = sum(float(item.get("PretaxAmount", 0)) for item in items)
-            currency = items[0].get("Currency", "USD")
-            return amount, currency
+        items = _extract_bill_items(data)
+        if items is not None:
+            if items:
+                amount = sum(float(item.get("PretaxAmount", 0)) for item in items if isinstance(item, dict))
+                curr = items[0].get("Currency") or currency
+                return amount, curr
+            return 0.0, currency
 
-    # 2. 回退查询账单总览
+    # 2. 仅在 DescribeInstanceBill 失败时尝试回退账单总览
     params2 = {"BillingCycle": billing_cycle}
     data2 = do_common_request(bill_client, bill_endpoint, "2017-12-14", "QueryBillOverview", params2, retries=3)
-    if data2:
-        items2 = data2.get("Data", {}).get("Items", {}).get("Item", [])
-        if items2:
-            amount2 = sum(float(item.get("PretaxAmount", 0)) for item in items2)
-            currency2 = items2[0].get("Currency", "USD")
-            return amount2, currency2
+    if data2 and data2.get("Success"):
+        items2 = _extract_bill_items(data2)
+        if items2 is not None:
+            if items2:
+                amount2 = sum(float(item.get("PretaxAmount", 0)) for item in items2 if isinstance(item, dict))
+                curr2 = items2[0].get("Currency") or currency
+                return amount2, curr2
+            return 0.0, currency
 
-    return -1, user.get("currency", "USD")
+    return -1, currency
 
 
 def query_account_balance(user):
     """查询账户可用余额。返回 (余额 float 或 None, 货币代码 str 或 None)"""
+    if AcsClient is None:
+        logging.warning("未安装 aliyunsdkcore 模块，跳过余额查询")
+        return None, None
     ak = user["ak"].strip()
     sk = user["sk"].strip()
     bill_endpoint = user.get("bill_endpoint", "business.ap-southeast-1.aliyuncs.com")

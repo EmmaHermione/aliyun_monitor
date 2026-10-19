@@ -37,6 +37,12 @@ def is_in_schedule_window(user, now=None):
     now = now or datetime.datetime.now()
     current_min = now.hour * 60 + now.minute
 
+    # 处理 23:59 作为当日截止时间的边界（避免 23:59 触发 1 分钟脱靶关机）
+    if end_min == 1439:
+        if start_min < end_min:
+            return start_min <= current_min <= end_min
+        return current_min >= start_min or current_min <= end_min
+
     if start_min < end_min:
         return start_min <= current_min < end_min
     return current_min >= start_min or current_min < end_min
@@ -183,7 +189,7 @@ def sync_ddns(user, public_ip, logger=None):
 
     token = str(user.get("ddns_token", "")).strip()
     zone_id = str(user.get("ddns_zone_id", "")).strip()
-    record_name = str(user.get("ddns_record_name", "")).strip()
+    record_name = str(user.get("ddns_record_name", "")).strip().lower()
     record_type = str(user.get("ddns_record_type", "A")).strip().upper() or "A"
     proxied = bool(user.get("ddns_proxied", False))
 
@@ -225,12 +231,12 @@ def sync_ddns(user, public_ip, logger=None):
         data = _cf_json(resp)
         if not resp.ok or not data.get("success"):
             err = _cf_error(data, resp.status_code)
-            return _result(False, f"DDNS: {record_name} 同步失败，{err}", True, record_name, public_ip)
+            return _result(False, f"DDNS: {record_name} 同步失败，{err}", False, record_name, public_ip)
         return _result(True, f"DDNS: {record_name} -> {public_ip} ({action})", True, record_name, public_ip)
     except Exception as exc:
         if logger:
             logger.warning("[%s] DDNS 同步异常: %s", user.get("name", user.get("instance_id")), exc)
-        return _result(False, f"DDNS: 同步异常 {exc}", True, record_name, public_ip)
+        return _result(False, f"DDNS: 同步异常 {exc}", False, record_name, public_ip)
 
 
 def _find_cf_record(zone_id, record_type, record_name, headers, logger=None):

@@ -3,7 +3,7 @@ sh << 'EOF'
 # Alpine VNC Auto Install
 P="yiwan123"
 D="/dev/vda"
-R="http://mirrors.aliyun.com/alpine/v3.23"
+R="http://mirrors.aliyun.com/alpine/latest-stable"
 setup-interfaces -a -r
 sleep 2
 cat>/tmp/a<<E

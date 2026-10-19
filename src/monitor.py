@@ -54,8 +54,10 @@ def load_state():
     # 月度交替时自动清理过期通知状态
     current_month = datetime.datetime.now().strftime("%Y-%m")
     if state.get("__month__") != current_month:
-        # 仅保留失败重试计数，清理旧月份的告警冷却
+        # 仅保留失败重试计数与域名记录，清理旧月份的告警冷却
         new_state = {"__month__": current_month}
+        if "ddns_records" in state:
+            new_state["ddns_records"] = state["ddns_records"]
         for k, v in state.items():
             if isinstance(v, dict) and "start_failures" in v:
                 new_state[k] = {"start_failures": v.get("start_failures", 0)}
@@ -95,11 +97,17 @@ def send_tg_alert(tg_conf, title, message, color_status):
     if not tg_conf.get("bot_token") or not tg_conf.get("chat_id"):
         return
     icon = "✅" if color_status == "green" else "🚨"
+    url = f"https://api.telegram.org/bot{tg_conf['bot_token']}/sendMessage"
+    text = f"{icon} *[{title}]*\n\n{message}"
+    data = {"chat_id": tg_conf["chat_id"], "text": text, "parse_mode": "Markdown"}
     try:
-        url = f"https://api.telegram.org/bot{tg_conf['bot_token']}/sendMessage"
-        text = f"{icon} *[{title}]*\n\n{message}"
-        data = {"chat_id": tg_conf["chat_id"], "text": text, "parse_mode": "Markdown"}
-        requests.post(url, json=data, timeout=5)
+        resp = requests.post(url, json=data, timeout=5)
+        if not resp.ok:
+            # Markdown 实体解析异常时降级纯文本重试，保障关键告警不遗漏
+            logger.warning("TG告警发送返回非 200 (%s)，尝试降级纯文本重试", resp.status_code)
+            plain_text = f"{icon} [{title}]\n\n{message}"
+            data = {"chat_id": tg_conf["chat_id"], "text": plain_text}
+            requests.post(url, json=data, timeout=5)
     except Exception as e:
         logger.error("TG发送失败: %s", e)
 
@@ -376,11 +384,16 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
                         break
 
                 if started:
-                    try:
-                        instance = get_instance(client, instance_id)
-                    except Exception:
-                        instance = None
-                    public_ip = instance_public_ip(instance)
+                    public_ip = ""
+                    for _ in range(3):
+                        try:
+                            instance = get_instance(client, instance_id)
+                            public_ip = instance_public_ip(instance)
+                            if public_ip:
+                                break
+                        except Exception:
+                            instance = None
+                        time.sleep(2)
                     ddns_result = sync_ddns_if_needed(user, state, instance_id, public_ip, force=True, logger=logger, config=config)
                     ddns_line = f"\n{ddns_result['message']}" if ddns_result else ""
                     result["status"] = "Running"
@@ -452,6 +465,18 @@ def check_and_act(user, tg_conf, state, allow_schedule_stop=True, config=None):
 
 
 def main():
+    # 尝试进程锁，避免 cron 重叠并发
+    lock_file = "/tmp/aliyun_monitor.lock"
+    lock_fd = None
+    try:
+        import fcntl
+        lock_fd = open(lock_file, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (ImportError, IOError):
+        if sys.platform != "win32":
+            logger.info("已有巡检任务正在执行中，跳过本轮执行以避免冲突")
+            return
+
     config = load_config()
     tg_conf = config.get("telegram", {})
     state = load_state()
@@ -465,7 +490,11 @@ def main():
 
     incoming_records = set()
     for user in users:
-        if not (user.get("paused") or user.get("disabled")) and is_in_schedule_window(user):
+        if (
+            not (user.get("paused") or user.get("disabled"))
+            and is_in_schedule_window(user)
+            and user.get("manual_override") != "stop"
+        ):
             rec = ddns_record_key(user)
             if rec:
                 incoming_records.add(rec)
@@ -496,12 +525,12 @@ def main():
             continue
 
         instance_id = user["instance_id"]
-        client = AcsClient(user["ak"], user["sk"], user["region"])
-        current_status = get_instance_status(client, instance_id) or res.get("status")
+        current_status = res.get("status")
         if current_status != "Running":
             clear_handoff_grace(state, instance_id)
             continue
 
+        client = AcsClient(user["ak"], user["sk"], user["region"])
         if rec in ready_records:
             linger_left = handoff_linger_remaining(state, instance_id)
             if linger_left > 0:

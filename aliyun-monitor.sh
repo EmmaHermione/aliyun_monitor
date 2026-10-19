@@ -81,9 +81,16 @@ function prompt_hhmm() {
 function install_script_file() {
     local FILE_NAME="$1"
     local TARGET_PATH="${TARGET_DIR}/${FILE_NAME}"
+    local LOCAL_SRC="$(dirname "$(current_installer_path)")/src/${FILE_NAME}"
 
     if [ -s "$TARGET_PATH" ]; then
         echo -e "${GREEN}✓ 使用服务器本地文件: ${TARGET_PATH}${NC}"
+        return 0
+    fi
+
+    if [ -s "$LOCAL_SRC" ]; then
+        cp "$LOCAL_SRC" "$TARGET_PATH"
+        echo -e "${GREEN}✓ 从当前仓库目录同步: ${FILE_NAME}${NC}"
         return 0
     fi
 
@@ -102,6 +109,13 @@ function install_script_file() {
 function download_script_file() {
     local FILE_NAME="$1"
     local TARGET_PATH="${TARGET_DIR}/${FILE_NAME}"
+    local LOCAL_SRC="$(dirname "$(current_installer_path)")/src/${FILE_NAME}"
+
+    if [ -s "$LOCAL_SRC" ]; then
+        cp "$LOCAL_SRC" "$TARGET_PATH"
+        echo -e "${GREEN}✓ 从当前仓库源码直接覆盖安装: ${FILE_NAME}${NC}"
+        return 0
+    fi
 
     echo -e "${YELLOW}从 GitHub 更新 ${FILE_NAME}...${NC}"
     if wget -q -O "${TARGET_PATH}.tmp" "${REPO_URL}/${FILE_NAME}" && [ -s "${TARGET_PATH}.tmp" ]; then
@@ -188,8 +202,9 @@ EOF
             return 1
         fi
     else
-        crontab -l > /tmp/cron_bk 2>/dev/null
-        grep -v "aliyun_monitor_bot" /tmp/cron_bk > /tmp/cron_clean
+        crontab -l > /tmp/cron_bk 2>/dev/null || true
+        touch /tmp/cron_bk
+        grep -v "aliyun_monitor_bot" /tmp/cron_bk > /tmp/cron_clean || true
         echo "@reboot nohup ${VENV_DIR}/bin/python ${TARGET_DIR}/bot.py >/dev/null 2>&1 #aliyun_monitor_bot" >> /tmp/cron_clean
         crontab /tmp/cron_clean
         rm -f /tmp/cron_bk /tmp/cron_clean
@@ -385,12 +400,13 @@ EOF
 
     # 9. 设置 Crontab
     echo -e "${YELLOW}>> 配置定时任务...${NC}"
-    crontab -l > /tmp/cron_bk 2>/dev/null
-    grep -v "aliyun_monitor" /tmp/cron_bk > /tmp/cron_clean
+    crontab -l > /tmp/cron_bk 2>/dev/null || true
+    touch /tmp/cron_bk
+    grep -v "aliyun_monitor" /tmp/cron_bk > /tmp/cron_clean || true
     echo "*/5 * * * * ${VENV_DIR}/bin/python ${TARGET_DIR}/monitor.py >/dev/null 2>&1 #aliyun_monitor" >> /tmp/cron_clean
     echo "0 9 * * * ${VENV_DIR}/bin/python ${TARGET_DIR}/report.py >/dev/null 2>&1 #aliyun_monitor" >> /tmp/cron_clean
     crontab /tmp/cron_clean
-    rm /tmp/cron_bk /tmp/cron_clean
+    rm -f /tmp/cron_bk /tmp/cron_clean
 
     setup_bot_service
 
