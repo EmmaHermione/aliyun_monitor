@@ -112,7 +112,7 @@ bash aliyun-monitor.sh
 安装脚本仍然只写入一个全局巡检任务：
 
 ```cron
-*/5 * * * * /opt/scripts/venv/bin/python /opt/scripts/monitor.py >> /opt/scripts/monitor.log 2>&1 #aliyun_monitor
+*/5 * * * * /opt/scripts/venv/bin/python /opt/scripts/monitor.py >/dev/null 2>&1 #aliyun_monitor
 ```
 
 `monitor.py` 每 5 分钟运行一次，并逐个读取 `/opt/scripts/config.json` 中的实例配置：
@@ -191,13 +191,14 @@ timedatectl set-timezone Asia/Shanghai
 2) 添加实例 (Add)
 3) 修改实例配置/DDNS (Edit)
 4) 修改运行窗口 (Schedule)
-5) 暂停/恢复监控 (Pause/Resume)
+5) 暂停/恢复/清除覆盖 (Pause/Resume/Clear Override)
 6) 删除实例 (Delete)
 
 系统维护：
 7) 更新脚本并重启服务 (Update)
 8) 重新初始化配置 (Reset Config)
 9) 卸载并清理脚本 (Uninstall)
+10) 查看运行日志 (Logs)
 0) 退出 (Exit)
 ```
 
@@ -332,7 +333,7 @@ Telegram 通知回显 DDNS 结果
 当某台机器处于特殊状态（例如安全锁定、维护或暂不希望自动开机/节省停机）时，可以临时暂停监控：
 
 1. 重新运行安装脚本进入管理面板。
-2. 选择 **“暂停/恢复监控实例 (Pause/Resume)”**。
+2. 选择 **“暂停/恢复/清除覆盖 (Pause/Resume/Clear Override)”**。
 3. 选择目标机器（如 `HK-02`）即可切换暂停/恢复状态。
 
 暂停后：
